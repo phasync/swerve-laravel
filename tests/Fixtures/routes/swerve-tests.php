@@ -1,0 +1,156 @@
+<?php
+
+// The test suite's routes, added to the Laravel skeleton's routes/web.php by tests/create-app.sh
+
+use App\Models\User;
+use Illuminate\Auth\GenericUser;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Route;
+use Psr\Http\Message\ServerRequestInterface;
+use Swerve\Http\WebSocket;
+
+// Wait without blocking the worker: sleep() waits as a coroutine with phasync-ext
+if (!\function_exists('swerve_test_wait')) {
+    function swerve_test_wait(float $seconds): void
+    {
+        \extension_loaded('phasync') ? \usleep((int) ($seconds * 1e6)) : phasync::sleep($seconds);
+    }
+}
+
+// Laravel 13 renamed the CSRF middleware
+$withoutCsrf = \array_filter([ValidateCsrfToken::class, 'Illuminate\Foundation\Http\Middleware\PreventRequestForgery'], 'class_exists');
+
+// A request-scoped service: a new instance for every request
+app()->scoped('test.scoped', fn () => new stdClass());
+
+Route::get('/json', fn () => ['hello' => 'world', 'laravel' => app()->version()]);
+// Without the web group's cookies and session, as an API route
+Route::get('/api/json', fn () => ['hello' => 'world'])->withoutMiddleware('web');
+
+Route::get('/form', fn () => Blade::render('<form method="post">@csrf<input name="name"></form>{{ $errors->first("name") }}'));
+Route::post('/form', function (Request $request) {
+    $request->validate(['name' => 'required']);
+
+    return 'Hello ' . $request->input('name');
+});
+
+Route::post('/json-echo', fn (Request $request) => ['all' => $request->all(), 'isJson' => $request->isJson(), 'method' => $request->method()])
+    ->withoutMiddleware($withoutCsrf);
+Route::put('/json-echo', fn (Request $request) => ['all' => $request->all(), 'isJson' => $request->isJson(), 'method' => $request->method()])
+    ->withoutMiddleware($withoutCsrf);
+
+Route::post('/upload', function (Request $request) {
+    $request->validate(['doc' => 'required|file', 'other' => 'required|file']);
+    $doc = $request->file('doc');
+    $tmp = $doc->getPathname();
+    $out = [
+        'name'   => $doc->getClientOriginalName(),
+        'size'   => $doc->getSize(),
+        'md5'    => \md5_file($tmp),
+        'valid'  => $doc->isValid(),
+        'stored' => $doc->store('uploads'),
+        'tmp'    => [$tmp, $request->file('other')->getPathname()],
+    ];
+    $moved        = $request->file('other')->move(storage_path('app/moved'), 'other.txt');
+    $out['moved'] = \file_get_contents($moved->getPathname());
+
+    return $out;
+})->withoutMiddleware($withoutCsrf);
+
+Route::get('/isolation/{tag}', function (Request $request, string $tag) {
+    $before = ['session' => session('tag'), 'user' => Auth::id(), 'scoped' => app('test.scoped')->tag ?? null, 'config' => config('app.tag')];
+    $request->attributes->set('tag', $tag);
+    session(['tag' => $tag]);
+    Auth::setUser(new GenericUser(['id' => $tag]));
+    app('test.scoped')->tag = $tag;
+    config(['app.tag' => $tag]);
+    swerve_test_wait((float) $request->query('wait', 0.2));
+
+    return ['before' => $before, 'after' => [
+        'query'   => request('q'),
+        'route'   => request()->route('tag'),
+        'attr'    => request()->attributes->get('tag'),
+        'session' => session('tag'),
+        'user'    => Auth::id(),
+        'scoped'  => app('test.scoped')->tag,
+        'config'  => config('app.tag'),
+    ]];
+});
+
+Route::get('/counter', function () {
+    session(['n' => $n = session('n', 0) + 1]);
+
+    return ['n' => $n, 'pid' => \getmypid(), 'driver' => config('session.driver')];
+});
+Route::get('/flash/set', function () {
+    session()->flash('message', 'saved');
+
+    return 'ok';
+});
+Route::get('/flash/show', fn () => session('message', 'none'));
+
+Route::get('/login', function () {
+    User::firstOrCreate(['email' => 'ada@example.com'], ['name' => 'Ada', 'password' => 'secret']);
+
+    return ['ok' => Auth::attempt(['email' => 'ada@example.com', 'password' => 'secret']), 'id' => Auth::id()];
+});
+Route::get('/me', fn () => ['id' => Auth::id()]);
+Route::get('/logout', function (Request $request) {
+    Auth::logout();
+    $request->session()->invalidate();
+
+    return ['id' => Auth::id()];
+});
+
+Route::get('/stream', fn () => response()->stream(function () {
+    echo 'first ' . \microtime(true) . "\n";
+    \flush();
+    swerve_test_wait(0.5);
+    echo 'last ' . \microtime(true) . "\n";
+}));
+Route::get('/sse', fn () => response()->eventStream(function () {
+    for ($i = 1; $i <= 3; ++$i) {
+        yield "tick $i";
+        swerve_test_wait(0.1);
+    }
+}));
+Route::get('/forever', fn () => response()->stream(function () {
+    try {
+        while (true) {
+            echo \str_repeat('x', 1000) . "\n";
+            swerve_test_wait(0.05);
+        }
+    } finally {
+        \file_put_contents(storage_path('forever-ended'), \getmypid());
+    }
+}));
+Route::get('/download', fn () => response()->download(base_path('composer.json')));
+
+Route::get('/echo', function () {
+    echo 'echoed ';
+
+    return 'body';
+});
+Route::get('/defer', function () {
+    defer(function () {
+        \usleep(700_000);
+        \file_put_contents(storage_path('deferred'), \microtime(true));
+    });
+
+    return \microtime(true);
+});
+Route::get('/slow', function (Request $request) {
+    swerve_test_wait((float) $request->query('s', 1));
+
+    return 'slow done';
+});
+Route::get('/memory', fn () => \memory_get_usage());
+
+Route::get('/ws', fn (ServerRequestInterface $request) => WebSocket::from($request, function (WebSocket $ws) {
+    foreach ($ws as $message) {
+        $ws->send("echo: $message");
+    }
+}));
