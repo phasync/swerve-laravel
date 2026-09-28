@@ -45,12 +45,21 @@ function app_start(int $workers = 2, array $env = []): array
 function app_stop($proc): int
 {
     \proc_terminate($proc, \SIGTERM);
+
+    return app_wait($proc);
+}
+
+/** Wait for swerve to exit, and return its exit code. */
+function app_wait($proc): int
+{
     $deadline = \microtime(true) + 10;
-    while (\proc_get_status($proc)['running'] && \microtime(true) < $deadline) {
+    while (($status = \proc_get_status($proc))['running'] && \microtime(true) < $deadline) {
         \usleep(50_000);
     }
+    $code = \proc_close($proc);
 
-    return \proc_close($proc);
+    // Before PHP 8.3 only the proc_get_status() that saw the exit has the exit code
+    return $status['running'] ? $code : $status['exitcode'];
 }
 
 /** Run $test against a swerve serving the fixture application, then stop it; returns its log. */

@@ -36,9 +36,9 @@ PHP-FPM children behind nginx against 4 swerve workers, same machine, opcache on
 
 | Laravel 13 skeleton, 4 workers | PHP-FPM | swerve | | swerve + phasync-ext |
 |---|---:|---:|---:|---:|
-| JSON route, no session | 1,545 | 2,882 | 1.9× | 2,907 |
-| Welcome page, new session | 146 | 1,150 | 7.9× | 1,140 |
-| Session counter, returning visitor | 119 | 1,217 | 10.2× | 1,190 |
+| JSON route, no session | 1,558 | 2,900 | 1.9× | 2,854 |
+| Welcome page, new session | 164 | 1,162 | 7.1× | 1,132 |
+| Session counter, returning visitor | 141 | 1,191 | 8.5× | 1,205 |
 
 PHP-FPM builds the services the `web` middleware needs (session, cookies, encryption, views,
 the database connection) for every request; a swerve worker keeps them. [Method and raw

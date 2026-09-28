@@ -215,7 +215,7 @@ test('drain: SIGTERM lets a slow request finish, and defer() work after a respon
         }
     } while ($running > 0);
     expect(\curl_multi_getcontent($slow))->toBe('slow done')
-        ->and(app_stop($proc))->toBe(0)
+        ->and(app_wait($proc))->toBe(0)
         ->and(\file_get_contents($log))->toContain('GET /slow?s=1 200')->not->toMatch('/error|exception|died/i');
     \unlink($log);
 
