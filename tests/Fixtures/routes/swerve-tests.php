@@ -31,6 +31,13 @@ app()->scoped('test.scoped', fn () => new stdClass());
 Route::get('/json', fn () => ['hello' => 'world', 'laravel' => app()->version()]);
 // Without the web group's cookies and session, as an API route
 Route::get('/api/json', fn () => ['hello' => 'world'])->withoutMiddleware('web');
+// A wait of ?ms= (default 10) in usleep(), as a database query waits: it blocks the worker
+// without phasync-ext
+Route::get('/api/usleep', function (Request $request) {
+    \usleep(1000 * (int) $request->query('ms', 10));
+
+    return ['waited' => (int) $request->query('ms', 10)];
+})->withoutMiddleware('web');
 
 Route::get('/form', fn () => Blade::render('<form method="post">@csrf<input name="name"></form>{{ $errors->first("name") }}'));
 Route::post('/form', function (Request $request) {
