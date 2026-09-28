@@ -15,6 +15,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\UploadedFileInterface;
 use Swerve\Http\Message\Response;
+use Swerve\Http\Message\Stream;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
@@ -30,24 +31,27 @@ final class Client implements OctaneClient
 {
     private string $public;
 
-    /** @var \WeakMap<Request, RequestContext> upgrade requests (WebSockets) in flight */
-    private \WeakMap $upgrades;
+    /**
+     * The requests in flight. Laravel keeps its last request after it ended: weak, so that
+     * swerve's request (and its uploaded files) goes when the request is over.
+     *
+     * @var \WeakMap<Request, \WeakReference<RequestContext>>
+     */
+    private \WeakMap $contexts;
 
     public function boot(Application $app): void
     {
         $this->public   = $app->publicPath();
-        $this->upgrades = new \WeakMap();
-        // An upgrade request's route gets swerve's own request, whose body is the connection,
-        // and may return WebSocket::from($request, ...): Laravel turns a PSR-7 response into
-        // its own, so the original is kept and handed to swerve as it is
+        $this->contexts = new \WeakMap();
+        // A route that asks for a ServerRequestInterface gets swerve's own request; for an
+        // upgrade its body is the connection, and the route may return WebSocket::from(...)
         $app['events']->listen(RequestReceived::class, function (RequestReceived $event) {
-            if (isset($this->upgrades[$event->request])) {
-                $event->sandbox->instance(ServerRequestInterface::class, $this->upgrades[$event->request]['psr']);
-            }
+            $event->sandbox->instance(ServerRequestInterface::class, $this->contexts[$event->request]->get()['psr']);
         });
+        // Laravel turns a PSR-7 response into its own: a 101 is kept, and handed to swerve as it is
         $app['events']->listen(PreparingResponse::class, function (PreparingResponse $event) {
-            if (isset($this->upgrades[$event->request]) && $event->response instanceof ResponseInterface) {
-                $this->upgrades[$event->request]['upgrade'] = $event->response;
+            if ($event->response instanceof ResponseInterface && 101 === $event->response->getStatusCode()) {
+                $this->contexts[$event->request]->get()['upgrade'] = $event->response;
             }
         });
     }
@@ -96,12 +100,12 @@ final class Client implements OctaneClient
             if (\in_array($method, ['PUT', 'PATCH', 'DELETE', 'QUERY'], true) && \str_starts_with(\strtolower($psr->getHeaderLine('Content-Type')), 'application/x-www-form-urlencoded')) {
                 \parse_str($content, $post);
             }
+            // Swerve's body was read: the route's ServerRequestInterface gets its bytes again
+            $context['psr'] = $psr->withBody(Stream::cast($content))->withParsedBody($post ?: $psr->getParsedBody());
         }
 
-        $request = Request::createFromBase(new SymfonyRequest($psr->getQueryParams(), $post, [], $psr->getCookieParams(), $files, $server, $content));
-        if ($upgrade) {
-            $this->upgrades[$request] = $context;
-        }
+        $request                  = Request::createFromBase(new SymfonyRequest($psr->getQueryParams(), $post, [], $psr->getCookieParams(), $files, $server, $content));
+        $this->contexts[$request] = \WeakReference::create($context);
 
         return [$request, $context];
     }

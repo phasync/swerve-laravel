@@ -28,13 +28,16 @@ test('a form POST with CSRF protection, validation errors through the session', 
     });
 });
 
-test('a JSON POST, and a url-encoded PUT', function () {
+test('a JSON POST, a url-encoded PUT, and a route taking a PSR-7 request', function () {
     with_app(function (string $addr) {
         $b    = new Browser($addr);
         $json = $b->request('POST', '/json-echo', ['Content-Type: application/json'], '{"a":1,"b":{"c":[2,3]}}');
         expect(\json_decode($json['body'], true))->toBe(['all' => ['a' => 1, 'b' => ['c' => [2, 3]]], 'isJson' => true, 'method' => 'POST']);
         $put = $b->request('PUT', '/json-echo', ['Content-Type: application/x-www-form-urlencoded'], 'x=1&y[]=2');
         expect(\json_decode($put['body'], true))->toBe(['all' => ['x' => '1', 'y' => ['2']], 'isJson' => false, 'method' => 'PUT']);
+        // Swerve's own request: a form is parsed, other bodies are read as they are
+        expect(\json_decode($b->request('POST', '/psr-echo', [], ['a' => '1'])['body'], true)['parsed'])->toBe(['a' => '1'])
+            ->and(\json_decode($b->request('POST', '/psr-echo', ['Content-Type: application/json'], '{"a":1}')['body'], true)['body'])->toBe('{"a":1}');
     });
 });
 
@@ -184,18 +187,6 @@ test('terminate() and defer() run after the response was sent', function () {
         }
         expect((float) \file_get_contents(APP . '/storage/deferred') - (float) $r['body'])->toBeGreaterThan(0.6);
     });
-});
-
-test('a WebSocket from a route', function () {
-    with_app(function (string $addr) {
-        $conn = ws_connect($addr, '/ws');
-        ws_send($conn, 'hello');
-        expect(ws_read($conn))->toBe([1, 'echo: hello']);
-        ws_send($conn, 'again');
-        expect(ws_read($conn))->toBe([1, 'echo: again'])
-            ->and((new Browser($addr))->json('/json'))->toMatchArray(['hello' => 'world']);
-        \fclose($conn);
-    }, workers: 1);
 });
 
 test('drain: SIGTERM lets a slow request finish, and defer() work after a response, without errors', function () {

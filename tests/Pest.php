@@ -173,12 +173,12 @@ function overlapping(array $requests): array
 }
 
 /** A WebSocket client connection, after a successful handshake. */
-function ws_connect(string $addr, string $path)
+function ws_connect(string $addr, string $path, string $cookie = '')
 {
     $conn = \stream_socket_client("tcp://$addr", $errno, $errstr, 5);
     \stream_set_timeout($conn, 5);
     $key = \base64_encode(\random_bytes(16));
-    \fwrite($conn, "GET $path HTTP/1.1\r\nHost: test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\n\r\n");
+    \fwrite($conn, "GET $path HTTP/1.1\r\nHost: test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\n" . ('' === $cookie ? '' : "Cookie: $cookie\r\n") . "\r\n");
     $head = '';
     while (!\str_contains($head, "\r\n\r\n") && false !== ($line = \fgets($conn))) {
         $head .= $line;
@@ -189,22 +189,54 @@ function ws_connect(string $addr, string $path)
     return $conn;
 }
 
-/** Send a text message, masked as a client must. */
-function ws_send($conn, string $payload): void
+/** Send a frame (text by default), masked as a client must. */
+function ws_send($conn, string $payload, int $opcode = 1): void
 {
+    $n    = \strlen($payload);
     $mask = \random_bytes(4);
-    \fwrite($conn, "\x81" . \chr(0x80 | \strlen($payload)) . $mask . ($payload ^ \substr(\str_repeat($mask, \intdiv(\strlen($payload), 4) + 1), 0, \strlen($payload))));
+    \fwrite($conn, \chr(0x80 | $opcode) . ($n < 126 ? \chr(0x80 | $n) : \chr(0x80 | 126) . \pack('n', $n)) . $mask . ($payload ^ \substr(\str_repeat($mask, \intdiv($n, 4) + 1), 0, $n)));
 }
 
-/** The next frame's opcode and (short) payload. */
+/** The next frame's opcode and payload; [0, ''] when the connection ended or went quiet. */
 function ws_read($conn): array
 {
-    $head    = \fread($conn, 2);
-    $length  = \ord($head[1]) & 0x7F;
-    $payload = '';
-    while (\strlen($payload) < $length && '' !== ($chunk = (string) \fread($conn, $length - \strlen($payload)))) {
-        $payload .= $chunk;
+    $need = function (int $n) use ($conn): string {
+        $bytes = '';
+        while (\strlen($bytes) < $n && '' !== ($chunk = (string) \fread($conn, $n - \strlen($bytes)))) {
+            $bytes .= $chunk;
+        }
+
+        return $bytes;
+    };
+    $head = $need(2);
+    if (2 !== \strlen($head)) {
+        return [0, ''];
+    }
+    $length = \ord($head[1]) & 0x7F;
+    if (126 === $length) {
+        $length = \unpack('n', $need(2))[1];
     }
 
-    return [\ord($head[0]) & 0x0F, $payload];
+    return [\ord($head[0]) & 0x0F, $need($length)];
+}
+
+/** The close frame's status code the server sends next, skipping other frames; null if none. */
+function ws_close_code($conn): ?int
+{
+    do {
+        [$opcode, $payload] = ws_read($conn);
+    } while (0 !== $opcode && 8 !== $opcode);
+
+    return 8 === $opcode ? \unpack('n', $payload)[1] : null;
+}
+
+/** Poll $probe until it returns $expected or $seconds pass; the last value. */
+function eventually(Closure $probe, mixed $expected, float $seconds = 5): mixed
+{
+    $deadline = \microtime(true) + $seconds;
+    while (($value = $probe()) !== $expected && \microtime(true) < $deadline) {
+        \usleep(50_000);
+    }
+
+    return $value;
 }

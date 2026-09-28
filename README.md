@@ -29,6 +29,81 @@ vendor/bin/swerve --http=0.0.0.0:8080 --public=public swerve.php
 That's the whole setup. `public/index.php` stays as it is, so the same application still runs
 under PHP-FPM.
 
+## WebSockets
+
+A route returns `Swerve\Http\WebSocket::from()` for a `ServerRequestInterface` parameter,
+which is swerve's own request. The handshake is an ordinary Laravel request (middleware,
+session, `$request->user()`); the callback runs after it, for as long as the connection is
+open, and holds no Laravel turn: the worker goes on serving requests meanwhile (tested with 250
+open sockets in one worker).
+
+```php
+use Psr\Http\Message\ServerRequestInterface;
+use Swerve\Http\WebSocket;
+
+Route::get('/echo', fn (ServerRequestInterface $request) => WebSocket::from($request, function (WebSocket $ws) {
+    foreach ($ws as $message) {             // ends when the client leaves
+        $ws->isBinary() ? $ws->sendBinary($message) : $ws->send("echo: $message");
+    }
+}));
+```
+
+An ordinary `GET` to that route is answered `426 Upgrade Required`.
+
+**Server push.** A socket that only forwards a topic, and any route, command or job that
+publishes to it. Messages reach the subscribers in every worker; the callback ends when its
+client leaves, or with a close frame (1001) when the worker drains.
+
+```php
+use Swerve\Swerve;
+
+Route::get('/news', fn (ServerRequestInterface $request) => WebSocket::from($request, function (WebSocket $ws) {
+    foreach (Swerve::subscribe('news') as $message) {
+        $ws->send($message);
+    }
+}));
+
+Route::post('/news', function (Request $request) {
+    Swerve::publish('news', json_encode($request->validate(['text' => 'required|string'])));
+
+    return response()->noContent();
+});
+```
+
+Every subscriber sees a topic's messages in the same order. Messages published by one request
+arrive in the order published; two requests in different workers may publish in the other
+order, so give messages that carry state a version from your database.
+
+**Take the user first.** The callback runs outside any request. Laravel keeps the current
+request, session, user and services in process-wide state, so inside the callback `auth()`,
+`session()`, `request()` and the facades see whichever request the worker runs at that moment,
+or, between requests, the application copy of the last one, which is gone: there the database,
+Eloquent and `Auth` throw. Read what the socket needs before `WebSocket::from()`, and run
+Laravel code from the callback with `Handler::run()`:
+
+```php
+use Swerve\Laravel\Handler;
+
+Route::get('/chat', function (Request $request, ServerRequestInterface $psr) {
+    $user = $request->user();               // now, while this request runs
+
+    return WebSocket::from($psr, function (WebSocket $ws) use ($user) {
+        foreach ($ws as $text) {
+            $message = Handler::run(fn () => $user->messages()->create(['text' => $text]));
+            Swerve::publish('chat', $message->toJson());
+        }
+    });
+})->middleware('auth');
+```
+
+`Handler::run()` runs its closure as Octane runs a task: in a fresh copy of the application,
+with Octane's listeners, and in the worker's turn, so it waits while a request runs. It returns
+what the closure returns and throws what it throws. The copy has no request, session or user;
+not callable from inside a request, which holds the turn already.
+
+An exception thrown by the callback closes the socket with 1011 and is written to swerve's log,
+not to Laravel's exception handler.
+
 ## What changes
 
 Requests per second, the Laravel 13 skeleton in production mode (`php artisan optimize`), 4
@@ -71,16 +146,8 @@ FrankenPHP servers are not used.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
   callback where it next waits.
-- **WebSockets:** in a route for an upgrade request, a `ServerRequestInterface` parameter is
-  swerve's own request, and the route may return `Swerve\Http\WebSocket::from($request, ...)`:
-
-  ```php
-  Route::get('/ws', fn (ServerRequestInterface $request) => WebSocket::from($request, function (WebSocket $ws) {
-      foreach ($ws as $message) {
-          $ws->send("echo: $message");
-      }
-  }));
-  ```
+- **WebSockets:** see [WebSockets](#websockets). The connection is swerve's; only the
+  handshake is a Laravel request.
 
 ## Before you deploy
 
@@ -94,9 +161,11 @@ FrankenPHP servers are not used.
   swerve's [publish and subscribe](https://github.com/phasync/swerve#publish-and-subscribe).
   When a client leaves, the callback is cancelled at its next wait, which needs phasync-ext
   for `sleep()` (or `phasync::sleep()` without it); a callback that never waits runs on.
-- **A WebSocket callback runs after its request ended**, outside the turn: take what it needs
-  from the request (the user, the session) before `WebSocket::from()`, since `auth()`,
-  `session()` and the facades there see whichever request runs at the time.
+- **A WebSocket callback runs outside any request:** take the user and anything else it needs
+  from the request before `WebSocket::from()`, and wrap Laravel code in the callback (queries,
+  Eloquent, logging, dispatching jobs) in `Handler::run()`. See [WebSockets](#websockets).
+- **Open WebSockets count as connections:** without phasync-ext a worker holds about 960; see
+  swerve's [sizing](https://github.com/phasync/swerve/blob/main/docs/production.md#sizing).
 - **Work after the response holds the worker's turn:** `defer()` callbacks and terminable
   middleware run before the next Laravel request of that worker, so keep them short or queue
   them. A draining worker (a reload, a shutdown) waits for them, up to `--grace`.

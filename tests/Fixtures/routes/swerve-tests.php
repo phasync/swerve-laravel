@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\Route;
 use Psr\Http\Message\ServerRequestInterface;
 use Swerve\Http\WebSocket;
+use Swerve\Laravel\Handler;
+use Swerve\Swerve;
 
 // Wait without blocking the worker: sleep() waits as a coroutine with phasync-ext
 if (!\function_exists('swerve_test_wait')) {
@@ -40,6 +42,10 @@ Route::post('/form', function (Request $request) {
 Route::post('/json-echo', fn (Request $request) => ['all' => $request->all(), 'isJson' => $request->isJson(), 'method' => $request->method()])
     ->withoutMiddleware($withoutCsrf);
 Route::put('/json-echo', fn (Request $request) => ['all' => $request->all(), 'isJson' => $request->isJson(), 'method' => $request->method()])
+    ->withoutMiddleware($withoutCsrf);
+
+// A route may ask for swerve's PSR-7 request instead of Laravel's
+Route::post('/psr-echo', fn (ServerRequestInterface $psr) => ['body' => (string) $psr->getBody(), 'parsed' => $psr->getParsedBody()])
     ->withoutMiddleware($withoutCsrf);
 
 Route::post('/upload', function (Request $request) {
@@ -149,8 +155,80 @@ Route::get('/slow', function (Request $request) {
 });
 Route::get('/memory', fn () => \memory_get_usage());
 
-Route::get('/ws', fn (ServerRequestInterface $request) => WebSocket::from($request, function (WebSocket $ws) {
-    foreach ($ws as $message) {
-        $ws->send("echo: $message");
+// Every WebSocket callback that runs has a file in storage/ws-live: /ws/live counts them, in all workers
+if (!\function_exists('swerve_test_live')) {
+    function swerve_test_live(Closure $callback): Closure
+    {
+        return function (WebSocket $ws) use ($callback) {
+            @\mkdir(storage_path('ws-live'));
+            \touch($file = storage_path('ws-live/' . \getmypid() . '-' . \spl_object_id($ws)));
+            try {
+                $callback($ws);
+            } finally {
+                \unlink($file);
+            }
+        };
     }
-}));
+}
+Route::get('/ws/live', fn () => \count(\glob(storage_path('ws-live/*'))));
+
+Route::get('/ws', fn (ServerRequestInterface $request) => WebSocket::from($request, swerve_test_live(function (WebSocket $ws) {
+    foreach ($ws as $message) {
+        $ws->isBinary() ? $ws->sendBinary(\strrev($message)) : $ws->send("echo: $message");
+    }
+})));
+
+// Server push: forward a topic; the first message says the subscription is there, and where
+Route::get('/ws/news', fn (ServerRequestInterface $request) => WebSocket::from($request, swerve_test_live(function (WebSocket $ws) {
+    $news = Swerve::subscribe('news');
+    $ws->send('subscribed ' . \getmypid());
+    foreach ($news as $message) {
+        $ws->send($message);
+    }
+})));
+Route::get('/publish', function (Request $request) {
+    if ($request->has('n')) {
+        for ($i = 1; $i <= $request->integer('n'); ++$i) {
+            Swerve::publish('news', $request->query('m') . " $i");
+        }
+    } else {
+        Swerve::publish('news', $request->query('m'));
+    }
+
+    return 'published';
+});
+
+// Identity: the user taken from the request before WebSocket::from(), and what Auth says
+// inside the callback, which is whatever request runs in the worker at that moment
+Route::get('/login-as/{name}', function (string $name) {
+    Auth::login(User::firstOrCreate(['email' => "$name@example.com"], ['name' => $name, 'password' => 'secret']));
+
+    return Auth::user()->name;
+});
+Route::get('/ws/me', function (Request $request, ServerRequestInterface $psr) {
+    $user = $request->user(); // taken while this request runs
+
+    return WebSocket::from($psr, function (WebSocket $ws) use ($user) {
+        $inside = function (Closure $read) {
+            try {
+                return $read();
+            } catch (Throwable $e) {
+                return $e::class;
+            }
+        };
+        foreach ($ws as $message) {
+            $ws->send(\json_encode([
+                'user'    => $user?->name,
+                'auth'    => $inside(fn () => Auth::user()?->name),     // wrong: whichever request runs now
+                'db'      => $inside(fn () => User::find($user?->id)?->name), // wrong: outside a request
+                'run'     => Handler::run(fn () => User::find($user?->id)?->name),
+                'message' => $message,
+            ]));
+        }
+    });
+});
+Route::get('/slow-me', function (Request $request) {
+    swerve_test_wait((float) $request->query('s', 1));
+
+    return Auth::user()?->name;
+});
