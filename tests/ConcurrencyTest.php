@@ -1,0 +1,77 @@
+<?php
+
+/*
+ * Interleaving: requests overlapping in one worker, each setting request state, waiting 0.1 s
+ * mid-request (another request runs meanwhile, when the worker lets it), and reading it back.
+ * The routes are the /probe* routes of tests/Fixtures/routes/swerve-tests.php. Every item but
+ * req-query fails when Handler::handle() runs the request without Synchronized::run(): see
+ * docs/concurrency.md.
+ */
+
+/** Four overlapping requests to each path; the bodies, in order. */
+function overlap(string $addr, array $paths, ?Closure $prepare = null): array
+{
+    $requests = [];
+    foreach ($paths as $i => $path) {
+        $browser = new Browser($addr);
+        $prepare && $prepare($browser, $i);
+        $requests[] = [$browser, $path];
+    }
+
+    return [\array_column(overlapping($requests), 'body'), \array_column($requests, 0)];
+}
+
+test('overlapping requests in one worker each keep their own request state', function () {
+    $log = with_app(function (string $addr) {
+        $tags = ['u0', 'u1', 'u2', 'u3'];
+        $read = fn (array $bodies) => \array_map(fn ($b) => \json_decode($b, true)['read'] ?? $b, $bodies);
+        $seen = $want = [];
+        foreach (['request', 'route', 'container', 'scoped', 'config', 'locale', 'session', 'url', 'view', 'req-query', 'req-route', 'req-session'] as $item) {
+            [$bodies, $browsers] = overlap($addr, \array_map(fn ($t) => "/probe/$item/$t?q=$t", $tags));
+            $seen[$item]         = $read($bodies);
+            $want[$item]         = $tags;
+            if ('session' === $item) { // what each session kept, under its own cookie
+                $seen['session kept'] = \array_map(fn (Browser $b) => $b->json('/probe/stored/x?wait=0')['read'], $browsers);
+                $want['session kept'] = $tags;
+            }
+        }
+        // The logged-in user, from each browser's own session
+        foreach (['auth', 'req-user'] as $item) {
+            [$bodies]    = overlap($addr, \array_map(fn ($t) => "/probe/$item/$t", $tags), fn (Browser $b, int $i) => $b->get("/login-as/$tags[$i]"));
+            $seen[$item] = $read($bodies);
+            $want[$item] = $tags;
+        }
+        // Carbon's locale: the month's name in each request's locale
+        [$bodies]        = overlap($addr, ['/probe/carbon/nb', '/probe/carbon/de', '/probe/carbon/fr', '/probe/carbon/es']);
+        $seen['carbon']  = $read($bodies);
+        $want['carbon']  = ['januar', 'Januar', 'janvier', 'enero'];
+        // Output: what a view and a route echo, around a wait
+        [$bodies]        = overlap($addr, \array_map(fn ($t) => "/probe/blade/$t", $tags));
+        $seen['blade']   = $read($bodies);
+        $want['blade']   = \array_map(fn ($t) => "$t-$t", $tags);
+        [$bodies]        = overlap($addr, \array_map(fn ($t) => "/probe-echo/$t", $tags));
+        $seen['echo']    = $bodies;
+        $want['echo']    = \array_map(fn ($t) => "$t-$t", $tags);
+        // A queued cookie goes with its own request's response only
+        [, $browsers]    = overlap($addr, \array_map(fn ($t) => "/probe-cookie/$t", $tags));
+        $seen['cookie']  = \array_map(fn (Browser $b) => \implode(',', \array_keys(\array_filter($b->cookies, fn ($k) => \str_starts_with($k, 'probe_'), \ARRAY_FILTER_USE_KEY))), $browsers);
+        $want['cookie']  = \array_map(fn ($t) => "probe_$t", $tags);
+        // A write made while another request's transaction is open is not part of it
+        $key             = 'probe-' . \bin2hex(\random_bytes(4));
+        [$bodies]        = overlap($addr, ['/probe-db/rollback', "/probe-db/write/$key"]);
+        $seen['db']      = [$bodies[0], $bodies[1], (new Browser($addr))->json("/probe-db/exists/$key")];
+        $want['db']      = ['{"level":1}', '{"level":0}', ['exists' => true]];
+
+        expect($seen)->toBe($want);
+    }, workers: 1);
+    expect($log)->not->toMatch('/error|exception/i');
+});
+
+test('requests waiting in one worker take turns', function () {
+    with_app(function (string $addr) {
+        $start    = \microtime(true);
+        [$bodies] = overlap($addr, \array_fill(0, 8, '/api/usleep?ms=200'));
+        expect($bodies)->toBe(\array_fill(0, 8, '{"waited":200}'))
+            ->and(\microtime(true) - $start)->toBeGreaterThan(1.6);
+    }, workers: 1);
+});

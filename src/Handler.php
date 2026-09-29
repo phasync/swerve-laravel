@@ -22,10 +22,12 @@ use Psr\Http\Server\RequestHandlerInterface;
  * Per request, the Worker clones the booted application into a sandbox, dispatches Octane's
  * events (RequestReceived, RequestHandled, RequestTerminated, OperationTerminated) to Octane's
  * listeners and to those of packages such as Livewire, Inertia and Sentry, and flushes the
- * sandbox. Laravel keeps the current request, session, user and container in process-wide
- * globals, so a worker runs one Laravel request at a time; the others wait for their turn
- * without blocking the worker's connections. The response goes to swerve as soon as it exists,
- * and terminate() and defer() callbacks run after that, still holding the turn.
+ * sandbox. The current application is process-wide (the container and the facades), and the
+ * sandboxes share the booted application's router, session store, auth guards, database
+ * connections and more, so a worker runs one Laravel request at a time; the others wait for
+ * their turn without blocking the worker's connections (docs/concurrency.md). The response goes
+ * to swerve as soon as it exists, and terminate() and defer() callbacks run after that, still
+ * holding the turn.
  */
 final class Handler implements RequestHandlerInterface
 {

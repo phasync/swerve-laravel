@@ -6,9 +6,13 @@ use App\Models\User;
 use Illuminate\Auth\GenericUser;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Blade;
+use Illuminate\Support\Facades\Cookie;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\View;
 use Psr\Http\Message\ServerRequestInterface;
 use Swerve\Http\WebSocket;
 use Swerve\Laravel\Handler;
@@ -239,3 +243,69 @@ Route::get('/slow-me', function (Request $request) {
 
     return Auth::user()?->name;
 });
+
+// Concurrency probes (tests/ConcurrencyTest.php): each sets one piece of request state to {tag},
+// waits ?wait= seconds (another request may run meanwhile), and reads it back
+if (!\function_exists('swerve_test_probes')) {
+    function swerve_test_probes(): array
+    {
+        return [
+            'request'   => [fn ($tag) => null, fn () => request('q')],
+            'route'     => [fn ($tag) => null, fn () => Route::current()?->parameter('tag')],
+            'container' => [fn ($tag) => app()->instance('swerve.tag', $tag), fn () => app()->bound('swerve.tag') ? app('swerve.tag') : null],
+            'scoped'    => [fn ($tag) => app('test.scoped')->tag = $tag, fn () => app('test.scoped')->tag ?? null],
+            'config'    => [fn ($tag) => config(['app.tag' => $tag]), fn () => config('app.tag')],
+            'locale'    => [fn ($tag) => App::setLocale($tag), fn () => App::getLocale()],
+            'session'   => [fn ($tag) => session(['tag' => $tag]), fn () => session('tag')],
+            'auth'      => [fn ($tag) => Auth::user()?->name, fn () => Auth::user()?->name],
+            'url'       => [fn ($tag) => null, fn () => \basename(url()->current())],
+            'view'      => [fn ($tag) => View::share('tag', $tag), fn () => Blade::render('{{ $tag }}')],
+            'stored'    => [fn ($tag) => null, fn () => session('tag')], // what the session kept
+            // Through the request object the route was given, not the helpers
+            'req-query'   => [fn ($tag) => null, fn ($request) => $request->query('q')],
+            'req-route'   => [fn ($tag, $request) => null, fn ($request) => $request->route('tag')],
+            'req-session' => [fn ($tag, $request) => $request->session()->put('tag', $tag), fn ($request) => $request->session()->get('tag')],
+            'req-user'    => [fn ($tag, $request) => $request->user()?->name, fn ($request) => $request->user()?->name],
+            'carbon'      => [fn ($tag) => App::setLocale($tag), fn () => Carbon\Carbon::create(2024, 1, 1)->translatedFormat('F')],
+            // A view that waits while it renders: its output buffer is open meanwhile
+            'blade'       => [fn ($tag) => null, fn ($request, $tag) => Blade::render('{{ $tag }}-@php(swerve_test_wait(0.1)){{ $tag }}', ['tag' => $tag])],
+        ];
+    }
+}
+Route::get('/probe/{item}/{tag}', function (Request $request, string $item, string $tag) {
+    [$set, $read] = swerve_test_probes()[$item];
+    $set($tag, $request);
+    swerve_test_wait((float) $request->query('wait', 0.1));
+
+    return ['read' => $read($request, $tag)];
+});
+// What a request echoes, in two parts around a wait
+Route::get('/probe-echo/{tag}', function (Request $request, string $tag) {
+    echo "$tag-";
+    swerve_test_wait((float) $request->query('wait', 0.1));
+    echo $tag;
+
+    return '';
+});
+// A queued cookie, sent with this request's response
+Route::get('/probe-cookie/{tag}', function (Request $request, string $tag) {
+    Cookie::queue("probe_$tag", 'x');
+    swerve_test_wait((float) $request->query('wait', 0.1));
+
+    return $tag;
+});
+// A transaction rolled back after a wait, and a write made meanwhile outside any transaction
+Route::get('/probe-db/rollback', function (Request $request) {
+    DB::beginTransaction();
+    swerve_test_wait((float) $request->query('wait', 0.2));
+    $level = DB::transactionLevel();
+    DB::rollBack();
+
+    return ['level' => $level];
+});
+Route::get('/probe-db/write/{key}', function (string $key) {
+    DB::table('cache')->insert(['key' => $key, 'value' => 'x', 'expiration' => \time() + 60]);
+
+    return ['level' => DB::transactionLevel()];
+});
+Route::get('/probe-db/exists/{key}', fn (string $key) => ['exists' => DB::table('cache')->where('key', $key)->exists()]);

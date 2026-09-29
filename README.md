@@ -139,11 +139,13 @@ FrankenPHP servers are not used.
   generator sandboxes, ...), and so do the Octane listeners of packages such as Livewire,
   Inertia and Sentry. Add your own in `config/octane.php` (`php artisan vendor:publish
   --tag=octane-config`).
-- **Concurrency:** one Laravel request at a time per worker. Laravel keeps the current request,
-  session, user and container in process-wide globals, so two requests in one worker would take
-  over each other's session and login. Requests waiting for their turn are suspended
-  (`phasync\Util\Synchronized`): meanwhile the worker goes on accepting connections, reading
-  request bodies, writing responses and serving static files and WebSockets.
+- **Concurrency:** one Laravel request at a time per worker. The current application is
+  process-wide, and Octane's per-request sandboxes share the booted application's session store,
+  auth guards, router and database connections, so two requests in one worker would take over
+  each other's session, login and transaction ([docs/concurrency.md](docs/concurrency.md)).
+  Requests waiting for their turn are suspended (`phasync\Util\Synchronized`): meanwhile the
+  worker goes on accepting connections, reading request bodies, writing responses and serving
+  static files and WebSockets. Size workers for the requests that wait at once.
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
