@@ -2,30 +2,36 @@
 
 namespace Swerve\Laravel;
 
+use Illuminate\Container\Container;
+use Illuminate\Pagination\PaginationState;
 use Laravel\Octane\ApplicationFactory;
-use Laravel\Octane\CurrentApplication;
-use Laravel\Octane\Events\TaskReceived;
-use Laravel\Octane\Events\TaskTerminated;
+use Laravel\Octane\Events\RequestReceived;
 use Laravel\Octane\RequestContext;
-use Laravel\Octane\Worker;
-use phasync\Util\Synchronized;
+use phasync\Context\DefaultContext;
+use phasync\Util\Pool;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
+use Swerve\Http\Virtual;
 
 /**
  * A Laravel application as swerve's request handler, from the project's swerve.php:
  *
  *     return new Swerve\Laravel\Handler(__DIR__);
  *
- * Once per worker, Octane's own Worker boots the application and dispatches WorkerStarting.
- * Per request, the Worker clones the booted application into a sandbox, dispatches Octane's
- * events (RequestReceived, RequestHandled, RequestTerminated, OperationTerminated) to Octane's
- * listeners and to those of packages such as Livewire, Inertia and Sentry, and flushes the
- * sandbox. Laravel keeps the current request, session, user and container in process-wide
- * globals, so a worker runs one Laravel request at a time; the others wait for their turn
- * without blocking the worker's connections. The response goes to swerve as soon as it exists,
- * and terminate() and defer() callbacks run after that, still holding the turn.
+ * Octane's own Worker boots the application and dispatches WorkerStarting. Per request, the
+ * Worker clones the booted application into a sandbox, dispatches Octane's events
+ * (RequestReceived, RequestHandled, RequestTerminated, OperationTerminated) to Octane's listeners
+ * and to those of packages such as Livewire, Inertia and Sentry, and flushes the sandbox. The
+ * response goes to swerve as soon as it exists; terminate() and defer() callbacks run after that.
+ *
+ * A booted application serves one request at a time: its sandboxes share its router, session
+ * store, auth guards, translator, view factory, cookie queue and database connections. With
+ * phasync-ext's virtualize() (each request's output buffers its own), a worker boots more of
+ * them, up to $apps, while requests overlap; Laravel's process-wide pointers to "the"
+ * application (app(), the facades, Eloquent's connection resolver, ...) follow the request's
+ * coroutine (Current). Without it, a worker serves one request at a time; the others wait
+ * without blocking the worker's connections. See docs/concurrency.md.
  */
 final class Handler implements RequestHandlerInterface
 {
@@ -33,64 +39,80 @@ final class Handler implements RequestHandlerInterface
     private static self $current;
 
     private readonly Client $client;
-    private readonly Worker $worker;
+
+    /** @var Pool<PoolWorker> */
+    private readonly Pool $workers;
+
+    /** Each request runs in phasync-ext's virtualize(): its output buffers are its own */
+    private readonly bool $virtual;
 
     /**
      * @param string $root the application's root directory, where composer.json is
+     * @param int    $apps the most applications per worker, so the most requests served at once
+     *                     with phasync-ext; without it, one
      */
-    public function __construct(string $root)
+    public function __construct(string $root, int $apps = 16)
     {
-        $this->client = new Client();
-        $this->worker = new Worker(new ApplicationFactory($root), $this->client);
-        $this->worker->boot();
-        $this->client->boot($this->worker->application());
-        // WorkerStopping: the worker's exit runs shutdown functions, after its last request
-        \register_shutdown_function($this->worker->terminate(...));
+        $this->client  = $client = new Client();
+        $this->virtual = Virtual::available();
+        $factory       = new ApplicationFactory($root);
+        $this->workers = new Pool(static function () use ($factory, $client) {
+            $worker = new PoolWorker($factory, $client);
+            $worker->boot();
+            $client->boot($worker->application());
+            Current::$fallback ??= $worker->application();
+            Current::install(); // the boot pointed Laravel's globals at the new application
+            // Blade::render() registers this namespace once per process, on the first application
+            $app = $worker->application();
+            $app['view']->addNamespace('__components', $app['config']->get('view.compiled'));
+            // Octane gives the paginator the sandbox on each request: the proxy instead
+            $worker->application()['events']->listen(RequestReceived::class, static fn () => PaginationState::resolveUsing(Container::getInstance()));
+            // WorkerStopping: the worker's exit runs shutdown functions, after its last request
+            \register_shutdown_function($worker->terminate(...));
+
+            return $worker;
+        }, $this->virtual ? $apps : 1);
+        \phasync::run(fn () => $this->workers->release($this->workers->borrow()));
         self::$current = $this;
     }
 
     /**
      * Run Laravel code outside a request, such as in a WebSocket callback, as Octane runs a
-     * task: in its own turn, in a fresh copy of the application. It waits while a request
-     * runs, and returns what $callback returns or throws what it throws.
+     * task: in a fresh copy of an application of its own, which no request uses meanwhile.
+     * Returns what $callback returns or throws what it throws.
      *
      *     foreach ($ws as $message) {
      *         Handler::run(fn () => Message::create(['user_id' => $userId, 'text' => $message]));
      *     }
      *
-     * Between requests Laravel's services refer to the application copy of the request that
-     * ran last, which is gone: the database, Eloquent and Auth throw there, and while a
-     * request runs they are that request's. The copy has no request, so no session or user
-     * (as in an Octane task): take the user before WebSocket::from(). Not from inside a
-     * request: it holds the turn.
+     * The copy has no request, so no session or user (as in an Octane task): take the user
+     * before WebSocket::from().
      */
     public static function run(\Closure $callback): mixed
     {
-        $handler = self::$current;
-
-        return Synchronized::run($handler, static function () use ($handler, $callback) {
-            $app = $handler->worker->application();
-            CurrentApplication::set($sandbox = clone $app);
-            $result = null;
-            try {
-                $sandbox['events']->dispatch(new TaskReceived($app, $sandbox, $callback));
-
-                return $result = $callback();
-            } finally {
-                $sandbox['events']->dispatch(new TaskTerminated($app, $sandbox, $callback, $result));
-                $sandbox->flush();
-                CurrentApplication::set($app);
-            }
-        });
+        $workers = self::$current->workers;
+        $worker  = $workers->borrow();
+        try {
+            return \phasync::await(\phasync::go(static fn () => $worker->task($callback), context: new DefaultContext()));
+        } finally {
+            $workers->release($worker);
+        }
     }
 
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
-        // Reading and parsing the body happens here, before waiting for the turn
+        // Reading and parsing the body happens here, before waiting for an application. The
+        // request's coroutines share swerve's phasync context for it, where Current finds its application
         [$laravelRequest, $context] = $this->client->marshalRequest(new RequestContext(['psr' => $request]));
         \phasync::go(function () use ($laravelRequest, $context) {
             try {
-                Synchronized::run($this, fn () => $this->worker->handle($laravelRequest, $context));
+                $worker = $this->workers->borrow();
+                try {
+                    $run = static fn () => $worker->handle($laravelRequest, $context);
+                    $this->virtual ? Virtual::run($context['psr'], $run) : $run();
+                } finally {
+                    $this->workers->release($worker);
+                }
             } finally {
                 $context['done'] = true;
                 \phasync::raiseFlag($context);

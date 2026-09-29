@@ -37,12 +37,12 @@ final class Client implements OctaneClient
      *
      * @var \WeakMap<Request, \WeakReference<RequestContext>>
      */
-    private \WeakMap $contexts;
+    private ?\WeakMap $contexts = null;
 
     public function boot(Application $app): void
     {
         $this->public   = $app->publicPath();
-        $this->contexts = new \WeakMap();
+        $this->contexts ??= new \WeakMap();
         // A route that asks for a ServerRequestInterface gets swerve's own request; for an
         // upgrade its body is the connection, and the route may return WebSocket::from(...)
         $app['events']->listen(RequestReceived::class, function (RequestReceived $event) {

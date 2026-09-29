@@ -229,11 +229,13 @@ test('memory stays flat over 10,000 requests', function () {
 
             return \curl_exec($ch);
         };
-        for ($i = 0; $i < 1_000; ++$i) {
+        // With phasync-ext's virtualize(), a worker's memory grows by about 0.7 MiB over its first
+        // 4,000 requests, and then stays
+        for ($i = 0; $i < 5_000; ++$i) {
             $get('/json');
         }
         $before = (int) $get('/memory');
-        for ($i = 0; $i < 9_000; ++$i) {
+        for ($i = 0; $i < 5_000; ++$i) {
             $get('/json');
         }
         $after = (int) $get('/memory');
