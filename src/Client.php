@@ -11,11 +11,11 @@ use Laravel\Octane\Octane;
 use Laravel\Octane\OctaneResponse;
 use Laravel\Octane\RequestContext;
 use phasync\CancelledException;
+use phasync\Psr\Response;
+use phasync\Psr\StreamFactory;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\UploadedFileInterface;
-use Swerve\Http\Message\Response;
-use Swerve\Http\Message\Stream;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
@@ -101,7 +101,7 @@ final class Client implements OctaneClient
                 \parse_str($content, $post);
             }
             // Swerve's body was read: the route's ServerRequestInterface gets its bytes again
-            $context['psr'] = $psr->withBody(Stream::cast($content))->withParsedBody($post ?: $psr->getParsedBody());
+            $context['psr'] = $psr->withBody(StreamFactory::create($content))->withParsedBody($post ?: $psr->getParsedBody());
         }
 
         $request                  = Request::createFromBase(new SymfonyRequest($psr->getQueryParams(), $post, [], $psr->getCookieParams(), $files, $server, $content));
@@ -126,19 +126,19 @@ final class Client implements OctaneClient
         // What the request echoed goes first, as under PHP-FPM (as Octane does, not for files)
         $output = $response instanceof BinaryFileResponse ? '' : (string) $octaneResponse->outputBuffer;
         if (!$response instanceof StreamedResponse && !$response instanceof BinaryFileResponse) {
-            $this->hand($context, new Response($output . $response->getContent(), $headers, $status));
+            $this->hand($context, new Response($status, $headers, $output . $response->getContent()));
 
             return;
         }
         if ('HEAD' === $context['psr']->getMethod() || 204 === $status || 304 === $status) {
-            $this->hand($context, new Response('', $headers, $status)); // swerve won't read a body
+            $this->hand($context, new Response($status, $headers, '')); // swerve won't read a body
 
             return;
         }
 
         // Streamed: the head goes now, and each piece as the callback echoes it
         $pipe = new Pipe();
-        $this->hand($context, new Response(new StreamedBody($pipe), $headers, $status));
+        $this->hand($context, new Response($status, $headers, new StreamedBody($pipe)));
         $fiber = \Fiber::getCurrent();
         $gone  = new class('The client left') extends CancelledException {
             /** Not an error: Laravel's exception handler logs nothing when this returns. */
@@ -181,7 +181,7 @@ final class Client implements OctaneClient
 
     public function error(\Throwable $e, Application $app, Request $request, RequestContext $context): void
     {
-        $this->hand($context, new Response(Octane::formatExceptionForClient($e, (bool) $app['config']->get('app.debug')), ['Content-Type' => 'text/plain'], 500));
+        $this->hand($context, new Response(500, ['Content-Type' => 'text/plain'], Octane::formatExceptionForClient($e, (bool) $app['config']->get('app.debug'))));
     }
 
     /**
