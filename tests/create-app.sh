@@ -27,3 +27,4 @@ cp ../routes/swerve-tests.php routes/
 grep -q swerve-tests.php routes/web.php || echo "require __DIR__.'/swerve-tests.php';" >> routes/web.php
 # The only file an application adds to run on swerve
 printf "<?php\n\nrequire __DIR__.'/vendor/autoload.php';\n\nreturn new Swerve\\\\Laravel\\\\Handler(__DIR__);\n" > swerve.php
+cp ../routes/adv-resources.php routes/; grep -q adv-resources.php routes/web.php || echo "require __DIR__.'/adv-resources.php';" >> routes/web.php
