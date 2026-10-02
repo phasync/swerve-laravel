@@ -105,20 +105,25 @@ request does, so it is not callable from inside a request.
 An exception thrown by the callback closes the socket with 1011 and is written to swerve's log,
 not to Laravel's exception handler.
 
-## What changes
+## What it costs
 
-Requests per second, the Laravel 13 skeleton in production mode (`php artisan optimize`), 4
-PHP-FPM children behind nginx against 4 swerve workers, same machine, opcache on:
+Requests per second, the Laravel 13 skeleton in production mode (`php artisan optimize`), JIT
+on, `wrk -t4 -c64`, best of three 10 s runs, one machine, with 4 workers. RoadRunner and
+FrankenPHP run the same application under Laravel Octane, which keeps one application per
+worker:
 
-| Laravel 13 skeleton, 4 workers | PHP-FPM | swerve | | swerve + phasync-ext |
+| 4 workers | swerve + phasync-ext | swerve | RoadRunner | FrankenPHP |
 |---|---:|---:|---:|---:|
-| JSON route, no session | 1,558 | 2,900 | 1.9× | 2,854 |
-| Welcome page, new session | 164 | 1,162 | 7.1× | 1,132 |
-| Session counter, returning visitor | 141 | 1,191 | 8.5× | 1,205 |
+| `/api/json`, no session | 1,776 | 1,978 | 2,970 | 3,509 |
+| `/json`, new session in SQLite | 779 | 845 | 1,248 | 1,364 |
+| `/api/usleep?ms=10`, a 10 ms wait | **1,661** | 256 | 295 | 296 |
 
-PHP-FPM builds the services the `web` middleware needs (session, cookies, encryption, views,
-the database connection) for every request; a swerve worker keeps them. [Method and raw
-results](benchmarks/).
+A request that computes costs more here than under Octane, which does not rebuild the
+application: about 2.1 ms of CPU, 1.2 ms of it in building the application (providers 0.75).
+A request that waits makes up for it with phasync-ext: the worker serves others meanwhile,
+where an Octane worker sits idle (a 10 ms wait caps a worker at 100 requests/s), so what
+the application waits for decides which is faster. Without phasync-ext a worker computes at about two thirds of an Octane
+worker's rate, and waits as one does. [Method](benchmarks/).
 
 ## How it runs
 

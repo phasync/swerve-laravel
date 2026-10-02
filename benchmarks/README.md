@@ -13,5 +13,10 @@ children behind nginx, then under swerve with 4 workers, without and with phasyn
 
 Sessions use the skeleton's database driver on SQLite, in WAL mode with a busy timeout.
 
-[`results-13.txt`](results-13.txt): Laravel 13, raw wrk output, with the machine and versions in
-its first lines. The machine is shared with other work, so figures vary by some 10% between runs.
+[`results-compare.txt`](results-compare.txt): swerve (with and without phasync-ext) against
+RoadRunner and FrankenPHP under Laravel Octane, 1, 2 and 4 workers, raw figures and the method in
+its first lines. RoadRunner and FrankenPHP ran in a throw-away copy of the application with
+`laravel/octane` installed, never in this package or its fixture; `/api/usleep?ms=10` is the wait
+of a query, in `usleep()`. The machine is shared with other work, so figures vary by some 10%
+between runs. `run.sh` repeats the PHP-FPM comparison; its results are not kept, since the
+adapter changed from one application per worker to one per request.

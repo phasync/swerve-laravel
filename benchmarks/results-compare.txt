@@ -1,0 +1,41 @@
+# 2026-10-02 Intel(R) Xeon(R) CPU E5-2697 v3 @ 2.60GHz, 56 CPUs; PHP 8.5.11, Laravel 13.34.0, opcache on, JIT tracing
+# swerve-laravel (a fresh application per request) against RoadRunner 2025.1.15 and FrankenPHP 1.12.7 under
+# laravel/octane (--max-requests unlimited), in a throw-away copy of the same application
+# wrk -t4 -c64, 4 s warm-up, then the best of three 10 s runs (req/s, and p99 of that run); production mode
+# swerve = phasync-ext loaded; swerve-noext = without it; the "N" is the number of workers
+swerve       N=1 /json                     239.84 req/s  p99 369.79ms  
+swerve       N=1 /api/json                 449.59 req/s  p99 156.96ms  
+swerve       N=1 /api/usleep?ms=10         429.64 req/s  p99 254.73ms  
+swerve-noext N=1 /json                     245.27 req/s  p99 353.28ms  
+swerve-noext N=1 /api/json                 460.56 req/s  p99 153.15ms  
+swerve-noext N=1 /api/usleep?ms=10          57.13 req/s  p99 1.89s     [connect 0, read 0, write 0, timeout 1 ][connect 0, read 0, write 0, timeout 1 ]
+rr           N=1 /json                     398.38 req/s  p99 256.04ms  
+rr           N=1 /api/json                 778.27 req/s  p99 103.00ms  
+rr           N=1 /api/usleep?ms=10          69.41 req/s  p99 1.60s     
+frankenphp   N=1 /json                     391.75 req/s  p99 281.31ms  
+frankenphp   N=1 /api/json                 851.06 req/s  p99 83.79ms   
+frankenphp   N=1 /api/usleep?ms=10          69.80 req/s  p99 1.56s     
+swerve       N=2 /json                     358.66 req/s  p99 328.13ms  
+swerve       N=2 /api/json                 821.17 req/s  p99 95.75ms   
+swerve       N=2 /api/usleep?ms=10         805.71 req/s  p99 103.16ms  
+swerve-noext N=2 /json                     265.05 req/s  p99 423.52ms  
+swerve-noext N=2 /api/json                 961.67 req/s  p99 83.16ms   
+swerve-noext N=2 /api/usleep?ms=10         122.12 req/s  p99 873.80ms  
+rr           N=2 /json                     290.06 req/s  p99 298.37ms  
+rr           N=2 /api/json                1516.92 req/s  p99 53.76ms   
+rr           N=2 /api/usleep?ms=10         144.97 req/s  p99 709.46ms  
+frankenphp   N=2 /json                     450.89 req/s  p99 226.48ms  
+frankenphp   N=2 /api/json                1742.38 req/s  p99 40.03ms   
+frankenphp   N=2 /api/usleep?ms=10         147.31 req/s  p99 724.73ms  
+swerve       N=4 /json                     778.84 req/s  p99 168.88ms  
+swerve       N=4 /api/json                1776.29 req/s  p99 54.64ms   
+swerve       N=4 /api/usleep?ms=10        1661.44 req/s  p99 54.82ms   
+swerve-noext N=4 /json                     844.83 req/s  p99 170.12ms  
+swerve-noext N=4 /api/json                1977.57 req/s  p99 38.34ms   
+swerve-noext N=4 /api/usleep?ms=10         255.90 req/s  p99 354.91ms  
+rr           N=4 /json                    1247.87 req/s  p99 66.45ms   
+rr           N=4 /api/json                2970.06 req/s  p99 28.56ms   
+rr           N=4 /api/usleep?ms=10         294.93 req/s  p99 308.37ms  
+frankenphp   N=4 /json                    1364.36 req/s  p99 59.83ms   
+frankenphp   N=4 /api/json                3508.93 req/s  p99 19.76ms   
+frankenphp   N=4 /api/usleep?ms=10         296.10 req/s  p99 288.38ms  
