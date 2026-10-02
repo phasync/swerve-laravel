@@ -135,6 +135,13 @@ that runs at the same time.
   HTTP kernel bootstraps: config, providers, `boot()`), and the services Octane warms
   (`octane.warm`) are resolved. A worker boots as many as its overlapping requests
   need, and drops an application that sat unused for 60 seconds (the third argument of `Handler`).
+  When a request takes the last idle application, a spare boots in the background (one at a
+  time), so the next request finds one ready.
+- **Context-local state:** `new Handler(__DIR__, '', 60.0, contextState: true)` gives each
+  application a `phasync::$contextState` array of its own (phasync 2.0.0-beta5 or later). A request
+  runs with the array of the application it takes, so static properties that are context-local
+  state belong to the application, as its instance properties do. Laravel's pointers to the
+  application are then the application's own, and the reset above applies on top.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
   fields, JSON, and uploads, which stay swerve's temporary files (no copy; deleted after the
   request unless moved). Octane's `RequestReceived` listeners reset the application (session,

@@ -12,13 +12,14 @@ use Illuminate\Http\Request;
 use Laravel\Octane\Events\RequestReceived;
 use Laravel\Octane\Events\RequestTerminated;
 use Laravel\Octane\Listeners\FlushUploadedFiles;
+use phasync\Psr\ServerRequest;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Swerve\Http\Virtual;
+use Swerve\Swerve;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
-use Swerve\Swerve;
 
 /**
  * A Laravel application as swerve's request handler, from the project's swerve.php:
@@ -35,6 +36,10 @@ use Swerve\Swerve;
  * to "the" application (app(), the facades, Eloquent's connection resolver, ...) follow the
  * request's coroutine (Current). With phasync-ext's virtualize() each request's output buffers
  * are its own too, which Laravel's view engine needs when a view waits while it renders.
+ *
+ * When a request takes the last idle application, a spare is booted in the background, so that the
+ * next request finds one ready.
+ * With contextState: true each application has its own phasync::$contextState array instead.
  */
 final class Handler implements RequestHandlerInterface
 {
@@ -57,24 +62,37 @@ final class Handler implements RequestHandlerInterface
     /** Each request runs in phasync-ext's virtualize(): its output buffers are its own */
     private readonly bool $virtual;
 
+    /** @var \WeakMap<Application, AppState> the context-local state of each application (contextState: true) */
+    private \WeakMap $states;
+
+    /** A spare application is being booted */
+    private bool $sparing = false;
+
     /**
-     * @param string $root        the application's root directory, where composer.json is
-     * @param string $basePath    the folder the application is served under when a reverse proxy
-     *                            strips it before swerve sees the request, such as '/demos/app';
-     *                            url(), redirects and signed URLs then include it, as under PHP-FPM
-     * @param float  $idleSeconds how long an application may sit unused before it is dropped; a
-     *                            worker boots as many as its overlapping requests need
+     * @param string $root         the application's root directory, where composer.json is
+     * @param string $basePath     the folder the application is served under when a reverse proxy
+     *                             strips it before swerve sees the request, such as '/demos/app';
+     *                             url(), redirects and signed URLs then include it, as under PHP-FPM
+     * @param float  $idleSeconds  how long an application may sit unused before it is dropped; a
+     *                             worker boots as many as its overlapping requests need
+     * @param bool   $contextState each application has a `phasync::$contextState` array of its own,
+     *                             which the request that takes the application runs with, for an
+     *                             application whose static properties are context-local state
+     *                             (phasync 2.0.0-beta5 or later); Laravel's pointers to the
+     *                             application are then the application's own, and {@see Current}
+     *                             is not used
      */
-    public function __construct(private readonly string $root, private readonly string $basePath = '', private readonly float $idleSeconds = 60.0)
+    public function __construct(private readonly string $root, private readonly string $basePath = '', private readonly float $idleSeconds = 60.0, private readonly bool $contextState = false)
     {
         // The first application only learns the application's class and warms opcache
         $app = require "$root/bootstrap/app.php";
         $app->make(ConsoleKernel::class)->bootstrap();
-        Current::install($app);
+        $contextState || Current::install($app);
         $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'));
         $this->virtual = Virtual::available();
         $this->booted  = new \WeakMap();
         $this->usedAt  = new \WeakMap();
+        $this->states  = new \WeakMap();
         $app->flush();
         self::$current = $this;
     }
@@ -107,6 +125,7 @@ final class Handler implements RequestHandlerInterface
         // Reading and parsing the body happens here, before the application is made
         [$laravelRequest, $context] = $this->client->marshalRequest($request);
         $this->sweeping || $this->startSweeping();
+        \count($this->idle) > 1 || $this->spare(); // the request takes the last application, or boots one
         $serve = fn () => $this->serve($laravelRequest, $context);
         if (isset($context['detached'])) {
             \phasync::go(function () use ($serve, $context) {
@@ -144,13 +163,17 @@ final class Handler implements RequestHandlerInterface
      */
     private function serve(Request $request, \ArrayObject $context): void
     {
-        $app = \array_pop($this->idle) ?? $this->boot();
-        Current::set($app);
+        if (null === ($app = \array_pop($this->idle))) {
+            $app = $this->boot();
+        } elseif ($this->contextState) {
+            $this->states[$app]->adopt();
+        }
+        $this->contextState || Current::set($app);
         // Nothing of this request is reused: the application goes; the error is the response unless one was handed over
         $fail = function (\Throwable $e) use ($app, $context) {
             $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
             $app[ExceptionHandler::class]->report($e);
-            Current::unset();
+            $this->contextState || Current::unset();
             $app->flush();
         };
         try {
@@ -185,8 +208,13 @@ final class Handler implements RequestHandlerInterface
             } catch (\Throwable $e) {
                 $app[ExceptionHandler::class]->report($e);
             } finally {
-                Current::unset();
+                $this->contextState || Current::unset();
                 if ($reset) {
+                    // The context may live on (a WebSocket callback): not with the state of an application another request takes now
+                    if ($this->contextState) {
+                        $left = \phasync::$contextStateDefaults;
+                        \phasync::adoptContextState($left);
+                    }
                     $this->usedAt[$app] = \microtime(true);
                     $this->idle[]       = $app;
                 } else {
@@ -246,17 +274,52 @@ final class Handler implements RequestHandlerInterface
         }, context: new \stdClass());
     }
 
-    /** A new application, bootstrapped as the HTTP kernel does, for the pool; it has no request yet. */
+    /**
+     * For a request that takes the last idle application: boot one in the background for the next,
+     * one at a time. Started from handle(), not from a request that runs in virtualize(), where
+     * another virtualize() would nest.
+     */
+    private function spare(): void
+    {
+        if ($this->sparing || Swerve::draining()) {
+            return;
+        }
+        $this->sparing = true;
+        \phasync::go(function () {
+            \phasync::sleep(); // the request goes first
+            $add = function () {
+                $app = $this->boot();
+                $this->contextState || Current::unset();
+                $this->usedAt[$app] = \microtime(true);
+                $this->idle[]       = $app;
+            };
+            try {
+                // As a request's application boots; the response is the empty one of a run that echoed nothing
+                $this->virtual ? Virtual::run(new ServerRequest('GET', '/', ''), $add) : $add();
+            } catch (\Throwable $e) {
+                Swerve::log()->error('A spare application did not boot: {exception}', ['exception' => $e]);
+            } finally {
+                $this->sparing = false;
+            }
+        }, context: new \stdClass()); // its own: not the request's, which waits for its coroutines, and its own state
+    }
+
+    /**
+     * A new application, bootstrapped as the HTTP kernel does, for the pool; it has no request yet.
+     * With $contextState it is booted in the state of its own, which the running context keeps.
+     */
     private function boot(): Application
     {
+        $state = $this->contextState ? new AppState() : null;
+        $state?->adopt();
         $app = require "$this->root/bootstrap/app.php";
-        Current::set($app);
+        $this->contextState || Current::set($app);
         $app->instance('request', Request::create('/'));
         $kernel = $app->make(HttpKernel::class);
         // HandleExceptions adds PHP error and exception handlers and a shutdown function, none
         // removable: the first application did that, and they go through Current
         $app->bootstrapWith(\array_values(\array_diff((new \ReflectionMethod($kernel, 'bootstrappers'))->invoke($kernel), [HandleExceptions::class])));
-        Current::install($app);
+        $this->install($app);
         $this->client->prepare($app);
         // Octane's default does not delete uploads; PHP-FPM does
         $app['events']->listen(RequestTerminated::class, FlushUploadedFiles::class);
@@ -266,8 +329,21 @@ final class Handler implements RequestHandlerInterface
             }
         }
         $this->booted[$app] = \Closure::bind(fn () => [$this->instances, $this->reboundCallbacks], $app, Container::class)();
+        if ($state) {
+            $state->sync(); // classes other applications declared while this one booted
+            $this->states[$app] = $state;
+        }
 
         return $app;
+    }
+
+    /**
+     * After an application bootstrapped: through Current its process-wide pointers follow the request;
+     * with contextState only HandleExceptions' is set, the rest being per application already.
+     */
+    private function install(Application $app): void
+    {
+        $this->contextState ? \Closure::bind(static fn () => HandleExceptions::$app = $app, null, HandleExceptions::class)() : Current::install($app);
     }
 
     /**
@@ -276,17 +352,18 @@ final class Handler implements RequestHandlerInterface
      */
     private function withApplication(\Closure $code): mixed
     {
+        $this->contextState && (new AppState())->adopt();
         $app = require "$this->root/bootstrap/app.php";
-        Current::set($app);
+        $this->contextState || Current::set($app);
         try {
             $kernel = $app->make(ConsoleKernel::class);
             $app->bootstrapWith(\array_values(\array_diff((new \ReflectionMethod($kernel, 'bootstrappers'))->invoke($kernel), [HandleExceptions::class])));
-            Current::install($app);
+            $this->install($app);
 
             return $code($app);
         } finally {
             $app->flush();
-            Current::unset();
+            $this->contextState || Current::unset();
         }
     }
 }

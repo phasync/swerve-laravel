@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A worker always has an application ready: when a request takes the last idle one, a spare
+  boots in the background (one at a time, not while the worker drains).
+- `new Handler($root, contextState: true)`: each pooled application has a `phasync::$contextState`
+  array of its own, which the request that takes it runs with, so context-local static state
+  belongs to the application; `Current` is not used then. Needs phasync 2.0.0-beta5 or later.
 - Requests overlap in a worker without phasync-ext too, whenever one waits in a coroutine; they no
   longer take turns. Only `echo` and output buffers around a wait need phasync-ext.
 - `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with

@@ -354,3 +354,49 @@ Route::get('/gadget/{name}', function (Request $request, string $name) {
 // The folder the application is served under (APP_BASE_PATH), as the request sees it
 Route::get('/where', fn (Request $request) => ['path' => $request->path(), 'full' => $request->fullUrl(), 'base' => $request->getBaseUrl(), 'url' => url('/x'), 'route' => route('where')])->name('where');
 Route::get('/go-back', fn () => back());
+
+// Context-local state (APP_CONTEXT_STATE, tests/ContextStateTest.php): each application has a
+// phasync::$contextState array of its own, and a request runs with the one of its application.
+// An application is told apart by an id kept in its state, as app() is not context-local here
+Route::get('/state/count', function () {
+    $id = phasync::$contextState['id'] ??= \bin2hex(\random_bytes(4));
+    $n  = phasync::$contextState['counter'] = (phasync::$contextState['counter'] ?? 0) + 1;
+    swerve_test_wait(0.05);
+
+    return ['app' => $id, 'counter' => $n, 'after' => phasync::$contextState['counter']];
+});
+Route::get('/state/bleed/{tag}', function (Request $request, string $tag) {
+    phasync::$contextState['x'] = $tag;
+    swerve_test_wait((float) $request->query('wait', 0.1));
+
+    return ['x' => phasync::$contextState['x']];
+});
+// What a later class declaration adds to the defaults, and what this application's state holds of it
+Route::get('/state/late', function (Request $request) {
+    $request->has('set') && phasync::$contextStateDefaults['late'] = 'v';
+    swerve_test_wait((float) $request->query('wait', 0));
+
+    return ['late' => phasync::$contextState['late'] ?? null];
+});
+// The streamed body runs in a coroutine of its own, in the request's context
+Route::get('/state/stream/{tag}', function (string $tag) {
+    phasync::$contextState['x'] = $tag;
+
+    return response()->stream(function () use ($tag) {
+        swerve_test_wait(0.1);
+        echo phasync::$contextState['x'];
+    });
+});
+// The callback runs after the request, outside its application: it has no state of the application's
+Route::get('/state/ws', function (ServerRequestInterface $request) {
+    phasync::$contextState['ws'] = 'request';
+
+    return WebSocket::from($request, function (WebSocket $ws) {
+        foreach ($ws as $message) {
+            $ws->send(\json_encode([
+                'callback' => phasync::$contextState['ws'] ?? null,
+                'run'      => Handler::run(fn () => [phasync::$contextState['ws'] ?? null, phasync::$contextState['run'] = (phasync::$contextState['run'] ?? 0) + 1]),
+            ]));
+        }
+    });
+});
