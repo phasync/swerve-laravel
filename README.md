@@ -133,8 +133,8 @@ that runs at the same time.
 
 - **Per worker:** an application is booted on demand (`bootstrap/app.php` is required and the
   HTTP kernel bootstraps: config, providers, `boot()`), and the services Octane warms
-  (`octane.warm`) are resolved. Up to 16 idle applications are kept; more are booted while
-  more requests are in flight, and dropped afterwards.
+  (`octane.warm`) are resolved. A worker boots as many as its overlapping requests
+  need, and drops an application that sat unused for 60 seconds (the third argument of `Handler`).
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
   fields, JSON, and uploads, which stay swerve's temporary files (no copy; deleted after the
   request unless moved). Octane's `RequestReceived` listeners reset the application (session,

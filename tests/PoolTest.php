@@ -1,8 +1,8 @@
 <?php
 
 /*
- * Every request builds its own Application, as php-fpm does. These tests look at what that means
- * for the application's class, and for the static state Eloquent keeps per model class.
+ * Every request runs in an Application of its own, taken from a pool of booted ones. These tests
+ * look at the pool, at the application's class, and at the static state Eloquent keeps per model class.
  */
 
 test('app() is an instance of the class bootstrap/app.php returned', function () {
@@ -50,4 +50,23 @@ test('a model that no provider boots misses its boot() listener in a request tha
         expect(\array_map(fn ($r) => \json_decode($r['body'], true), overlapping($requests)))
             ->toBe([['listener' => null], ['listener' => 1]]);
     }, workers: 1);
+});
+
+test('applications are booted as requests overlap, and dropped after sitting unused', function () {
+    with_app(function (string $addr) {
+        $boots = fn () => (new Browser($addr))->json('/boots')['boots'];
+        $start = $boots();
+        $burst = \array_map(fn ($i) => [new Browser($addr), '/api/wait?ms=300'], \range(1, 6));
+        overlapping($burst);
+        $booted = $boots() - $start;
+        expect($booted)->toBeGreaterThan(1);
+
+        // Used again soon: the same applications serve, nothing is booted
+        overlapping($burst);
+        expect($boots() - $start)->toBe($booted);
+
+        // Unused for longer than the idle time: they were dropped, a request boots a new one
+        \usleep(1_500_000);
+        expect($boots() - $start)->toBeGreaterThan($booted);
+    }, workers: 1, env: ['APP_IDLE_SECONDS' => '0.6']);
 });

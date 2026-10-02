@@ -7,7 +7,7 @@
 - `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with
   `url()`, redirects and signed URLs as under PHP-FPM.
 - Requests run in pooled applications that Laravel Octane's listeners reset (`laravel/octane` is
-  now required): an application serves one request at a time, up to 16 idle ones are kept, and
+  now required): an application serves one request at a time, a worker boots as many as it needs and drops those unused for 60 seconds, and
   the container goes back to its post-boot state after each request. A provider that reads the
   request while it boots finds an empty one. `app()` is an instance of the class
   `bootstrap/app.php` returned; a `final` subclass is refused at start.

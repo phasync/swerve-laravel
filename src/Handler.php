@@ -16,6 +16,7 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Swerve\Http\Virtual;
+use Swerve\Swerve;
 
 /**
  * A Laravel application as swerve's request handler, from the project's swerve.php:
@@ -38,12 +39,15 @@ final class Handler implements RequestHandlerInterface
     /** The worker's handler, for run() */
     private static self $current;
 
-    private const MAX_IDLE = 16;
-
     private readonly Client $client;
 
-    /** @var list<Application> booted applications between requests */
+    /** @var list<Application> booted applications between requests, the longest idle first */
     private array $idle = [];
+
+    /** @var \WeakMap<Application, float> when each idle application was last used */
+    private \WeakMap $usedAt;
+
+    private bool $sweeping = false;
 
     /** @var \WeakMap<Application, array{array, array}> what each application's container held when it was booted */
     private \WeakMap $booted;
@@ -52,12 +56,14 @@ final class Handler implements RequestHandlerInterface
     private readonly bool $virtual;
 
     /**
-     * @param string $root     the application's root directory, where composer.json is
-     * @param string $basePath the folder the application is served under when a reverse proxy
-     *                         strips it before swerve sees the request, such as '/demos/app';
-     *                         url(), redirects and signed URLs then include it, as under PHP-FPM
+     * @param string $root        the application's root directory, where composer.json is
+     * @param string $basePath    the folder the application is served under when a reverse proxy
+     *                            strips it before swerve sees the request, such as '/demos/app';
+     *                            url(), redirects and signed URLs then include it, as under PHP-FPM
+     * @param float  $idleSeconds how long an application may sit unused before it is dropped; a
+     *                            worker boots as many as its overlapping requests need
      */
-    public function __construct(private readonly string $root, private readonly string $basePath = '')
+    public function __construct(private readonly string $root, private readonly string $basePath = '', private readonly float $idleSeconds = 60.0)
     {
         // The first application only learns the application's class and warms opcache
         $app = require "$root/bootstrap/app.php";
@@ -66,6 +72,7 @@ final class Handler implements RequestHandlerInterface
         $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'));
         $this->virtual = Virtual::available();
         $this->booted  = new \WeakMap();
+        $this->usedAt  = new \WeakMap();
         $app->flush();
         self::$current = $this;
     }
@@ -97,6 +104,7 @@ final class Handler implements RequestHandlerInterface
     {
         // Reading and parsing the body happens here, before the application is made
         [$laravelRequest, $context] = $this->client->marshalRequest($request);
+        $this->sweeping || $this->startSweeping();
         \phasync::go(function () use ($laravelRequest, $context) {
             try {
                 $serve = fn () => $this->serve($laravelRequest, $context);
@@ -155,12 +163,35 @@ final class Handler implements RequestHandlerInterface
             }
         } finally {
             Current::unset();
-            if ($reset && \count($this->idle) < self::MAX_IDLE) {
-                $this->idle[] = $app;
+            if ($reset) {
+                $this->usedAt[$app] = \microtime(true);
+                $this->idle[]       = $app;
             } else {
                 $app->flush();
             }
         }
+    }
+
+    /** Drops the applications that sat unused for $idleSeconds, checked six times in that time. */
+    private function startSweeping(): void
+    {
+        $this->sweeping = true;
+        \phasync::go(function () {
+            $every = $this->idleSeconds / 6;
+            $next  = \microtime(true) + $every;
+            // Short sleeps: a draining worker waits for this coroutine to end
+            while (!Swerve::draining()) {
+                \phasync::sleep(\min(0.25, $every));
+                if (\microtime(true) < $next) {
+                    continue;
+                }
+                $next  = \microtime(true) + $every;
+                $limit = \microtime(true) - $this->idleSeconds;
+                while ($this->idle && $this->usedAt[$this->idle[0]] <= $limit) {
+                    \array_shift($this->idle)->flush();
+                }
+            }
+        }, context: new \stdClass());
     }
 
     /** A new application, bootstrapped as the HTTP kernel does, for the pool; it has no request yet. */
