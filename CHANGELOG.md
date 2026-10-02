@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with
+  `url()`, redirects and signed URLs as under PHP-FPM.
+
 ## 0.1.0-alpha2
 
 - WebSockets tested both ways from a route: echo, server push with `Swerve::subscribe()`

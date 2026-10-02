@@ -26,4 +26,4 @@ sed -i "s/'busy_timeout' => null/'busy_timeout' => 5000/; s/'journal_mode' => nu
 cp ../routes/swerve-tests.php routes/
 grep -q swerve-tests.php routes/web.php || echo "require __DIR__.'/swerve-tests.php';" >> routes/web.php
 # The only file an application adds to run on swerve
-printf "<?php\n\nrequire __DIR__.'/vendor/autoload.php';\n\nreturn new Swerve\\\\Laravel\\\\Handler(__DIR__);\n" > swerve.php
+printf "<?php\n\nrequire __DIR__.'/vendor/autoload.php';\n\nreturn new Swerve\\\\Laravel\\\\Handler(__DIR__, (string) getenv('APP_BASE_PATH'));\n" > swerve.php

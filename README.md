@@ -177,6 +177,10 @@ FrankenPHP servers are not used.
   `dump()`.
 - **State in static properties and singletons lives on** from request to request, as under
   Octane: register per-request services with `$app->scoped()`, or list them in `octane.flush`.
+- **Behind a proxy that serves the application in a folder** (`https://example.com/app/`
+  forwarded to swerve as `/`), use `new Handler(__DIR__, '/app')`. `url()`, `route()`,
+  `back()` and signed URLs then include the folder, as under PHP-FPM. `X-Forwarded-Prefix`
+  does nothing for an application that doesn't trust it.
 - **Multipart `PUT` and `PATCH` bodies are not parsed**; url-encoded and JSON ones are. Send
   forms with files as `POST` with `_method=PUT`.
 - **Code and config changes need a reload:** `--watch` during development, `SIGHUP` (a rolling

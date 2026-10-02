@@ -309,3 +309,7 @@ Route::get('/probe-db/write/{key}', function (string $key) {
     return ['level' => DB::transactionLevel()];
 });
 Route::get('/probe-db/exists/{key}', fn (string $key) => ['exists' => DB::table('cache')->where('key', $key)->exists()]);
+
+// The folder the application is served under (APP_BASE_PATH), as the request sees it
+Route::get('/where', fn (Request $request) => ['path' => $request->path(), 'full' => $request->fullUrl(), 'base' => $request->getBaseUrl(), 'url' => url('/x'), 'route' => route('where')])->name('where');
+Route::get('/go-back', fn () => back());

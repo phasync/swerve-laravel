@@ -18,6 +18,9 @@ use Psr\Http\Server\RequestHandlerInterface;
  *
  *     return new Swerve\Laravel\Handler(__DIR__);
  *
+ * Behind a proxy that serves the application in a folder and strips it from the path, say
+ * https://example.com/app/ forwarded to swerve as /, pass the folder: new Handler(__DIR__, '/app').
+ *
  * Once per worker, Octane's own Worker boots the application and dispatches WorkerStarting.
  * Per request, the Worker clones the booted application into a sandbox, dispatches Octane's
  * events (RequestReceived, RequestHandled, RequestTerminated, OperationTerminated) to Octane's
@@ -38,11 +41,14 @@ final class Handler implements RequestHandlerInterface
     private readonly Worker $worker;
 
     /**
-     * @param string $root the application's root directory, where composer.json is
+     * @param string $root     the application's root directory, where composer.json is
+     * @param string $basePath the folder the application is served under when a reverse proxy
+     *                         strips it before swerve sees the request, such as '/demos/app';
+     *                         url(), redirects and signed URLs then include it, as under PHP-FPM
      */
-    public function __construct(string $root)
+    public function __construct(string $root, string $basePath = '')
     {
-        $this->client = new Client();
+        $this->client = new Client(\rtrim($basePath, '/'));
         $this->worker = new Worker(new ApplicationFactory($root), $this->client);
         $this->worker->boot();
         $this->client->boot($this->worker->application());
