@@ -11,12 +11,6 @@ test('app() is an instance of the class bootstrap/app.php returned', function ()
     }, workers: 1, env: ['APP_CLASS' => 'App\CustomApplication']);
 });
 
-test('a provider that reads the request while booting finds it, as under php-fpm', function () {
-    with_app(function (string $addr) {
-        expect((new Browser($addr))->json('/root-url')['url'])->toBe('http://'.$addr.'/x');
-    }, workers: 1);
-});
-
 test('a final application class is refused at start, with the reason', function () {
     expect(fn () => with_app(fn () => null, workers: 1, env: ['APP_CLASS' => 'App\FinalApplication']))
         ->toThrow(RuntimeException::class, 'App\FinalApplication is final');

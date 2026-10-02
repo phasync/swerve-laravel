@@ -33,18 +33,23 @@ final class Client
     {
     }
 
+    /** Once per application: a route that returns swerve's 101 response gets it sent as it is. */
+    public function prepare(Application $app): void
+    {
+        $app['events']->listen(PreparingResponse::class, static function (PreparingResponse $event) use ($app) {
+            if ($event->response instanceof ResponseInterface && 101 === $event->response->getStatusCode()) {
+                $app->make('swerve.context')['upgrade'] = $event->response;
+            }
+        });
+    }
+
     /** Give the routes of $app swerve's request, and swerve a 101 response to send as it is. */
     public function bind(Application $app, \ArrayObject $context): void
     {
         // A route that asks for a ServerRequestInterface gets swerve's own request; for an
         // upgrade its body is the connection, and the route may return WebSocket::from(...)
         $app->instance(ServerRequestInterface::class, $context['psr']);
-        // Laravel turns a PSR-7 response into its own: a 101 is kept
-        $app['events']->listen(PreparingResponse::class, static function (PreparingResponse $event) use ($context) {
-            if ($event->response instanceof ResponseInterface && 101 === $event->response->getStatusCode()) {
-                $context['upgrade'] = $event->response;
-            }
-        });
+        $app->instance('swerve.context', $context);
     }
 
     /**

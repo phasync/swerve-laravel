@@ -126,23 +126,30 @@ worker's rate, and waits as one does. [Method](benchmarks/).
 
 ## How it runs
 
-Every request runs as under PHP-FPM, and nothing is shared between requests but classes,
-opcache and PHP's static properties. The adapter does not depend on Laravel Octane.
+Each request runs in an application of its own, taken from a pool of booted applications and reset
+afterwards by [Laravel Octane](https://github.com/laravel/octane)'s listeners (the `listeners` of
+`config/octane.php`, so yours apply too). A request never shares an application with another
+that runs at the same time.
 
-- **Once per worker:** `bootstrap/app.php` is required and bootstrapped once, to learn the
-  application's class and warm opcache. Then it is dropped.
+- **Per worker:** an application is booted on demand (`bootstrap/app.php` is required and the
+  HTTP kernel bootstraps: config, providers, `boot()`), and the services Octane warms
+  (`octane.warm`) are resolved. Up to 16 idle applications are kept; more are booted while
+  more requests are in flight, and dropped afterwards.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
   fields, JSON, and uploads, which stay swerve's temporary files (no copy; deleted after the
-  request unless moved). Then `bootstrap/app.php` is required again, the HTTP kernel
-  bootstraps (config, providers, `boot()`), handles the request and the response goes to
-  swerve. After that `terminate()` runs, with the `defer()` callbacks, and the application is
-  flushed and dropped. Nothing needs resetting, and no Octane event or `config/octane.php` is
-  involved. `app()` is an instance of the class `bootstrap/app.php` returned (`Application`, or
-  your subclass of it); a `final` subclass is refused at start.
+  request unless moved). Octane's `RequestReceived` listeners reset the application (session,
+  auth, cookies, locale, ...), the HTTP kernel handles the request and the response goes to
+  swerve. After that `terminate()` runs, with the `defer()` callbacks, and the container goes
+  back to what it held after boot: whatever the request resolved or registered is dropped. An
+  application whose request failed or was cancelled is dropped instead of reused. `app()` is an
+  instance of the class `bootstrap/app.php` returned (`Application`, or your subclass of it);
+  a `final` subclass is refused at start.
+- **No request at boot:** a provider that reads the request while it boots finds an empty one
+  for `/`, as under Octane. Do that work in a middleware or a route.
 - **Concurrency:** Laravel keeps "the" application in process-wide pointers (`app()`, the
   facades, Eloquent's connection resolver and event dispatcher, ...). They are proxies that
   forward to the application of the request that runs, so requests that wait overlap in one
-  worker, each in its own application, sharing nothing. A request waits in a coroutine
+  worker, each in its own application. A request waits in a coroutine
   (`phasync::sleep()`, phasync's HTTP client, sockets) with or without phasync-ext; with it
   `sleep()`, `usleep()`, PDO/mysqli queries, curl and `flock()` wait that way as well, and
   without it they hold the worker, as under any other server. One thing needs phasync-ext:
@@ -161,7 +168,7 @@ opcache and PHP's static properties. The adapter does not depend on Laravel Octa
 
 - **Use phasync-ext for concurrency.** Without it a worker runs one Laravel request at a time
   (size `--workers` like PHP-FPM's `pm.max_children`), and a request that waits holds up the
-  others queued in its worker. With it they overlap, each building an application of its own:
+  others queued in its worker. With it they overlap, each in an application of its own:
   memory is that of one application per request in flight.
 - **Behind a proxy that serves the application in a folder** (`https://example.com/app/`
   forwarded to swerve as `/`), use `new Handler(__DIR__, '/app')`. `url()`, `route()`,
@@ -169,38 +176,9 @@ opcache and PHP's static properties. The adapter does not depend on Laravel Octa
 - **Run swerve with opcache** (`php -d opcache.enable_cli=1 vendor/bin/swerve ...`, or in the
   CLI's `php.ini`): without it every application recompiles Laravel's files, which is slow and
   makes the worker's memory grow.
-- **Each request builds its application,** as PHP-FPM does: what your providers do at boot
-  costs time on every request. A provider that waits (a query, an API call) while it boots
-  lets another request see Laravel's pointers at their raw state: do that work in a route or a
-  listener.
-- **A streamed response holds its worker's turn** until the callback returns, without
-  phasync-ext: an endless Server-Sent Events loop is one worker per client. For many clients,
-  use a WebSocket, or swerve's [publish and subscribe](https://github.com/phasync/swerve#publish-and-subscribe).
-  When a client leaves, the callback is cancelled at its next wait, which needs phasync-ext
-  for `sleep()` (or `phasync::sleep()` without it); a callback that never waits runs on.
-- **A WebSocket callback runs outside any request:** take the user and anything else it needs
-  from the request before `WebSocket::from()`, and wrap Laravel code in the callback (queries,
-  Eloquent, logging, dispatching jobs) in `Handler::run()`. See [WebSockets](#websockets).
-- **Open WebSockets count as connections:** without phasync-ext a worker holds about 960; see
-  swerve's [sizing](https://github.com/phasync/swerve/blob/main/docs/production.md#sizing).
-- **Work after the response runs in the request's coroutine:** `defer()` callbacks and
-  terminable middleware run after the response went to swerve. A draining worker (a reload, a
-  shutdown) waits for them, up to `--grace`.
-- **`exit`, `die()` and `dd()` end the worker**, and the requests it serves with it. Use
-  `dump()`.
-- **Your own static properties live on** from request to request, shared by the requests of a
-  worker; singletons and everything in the container die with the request's application.
-  Eloquent boots a model once per process, and puts the listeners of its `boot()` in the
-  application that is current then: a model that no provider uses, first used by a request
-  after another request used it, misses them. Register model events in a provider, or use
-  observers there.
-- **Multipart `PUT` and `PATCH` bodies are not parsed**; url-encoded and JSON ones are. Send
-  forms with files as `POST` with `_method=PUT`.
-- **Code and config changes need a reload:** `--watch` during development, `SIGHUP` (a rolling
-  reload) in production. `php artisan optimize` works as usual.
-- **SQLite:** use WAL mode and a busy timeout (`'journal_mode' => 'wal', 'busy_timeout' => 5000`
-  in `config/database.php`). With Laravel's defaults, concurrent session writes time out under
-  load.
+- **An application is reused,** as under Octane: state your own code keeps in a singleton or a
+  static between requests is shared by the requests that run in that application one after
+  the other. Octane's `config/octane.php` `listeners` and `flush` are the place to reset it.
 
 ## Compatibility
 

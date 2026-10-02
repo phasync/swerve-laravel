@@ -46,7 +46,7 @@ test('overlapping requests in one worker each keep their own request state', fun
         $want['carbon']  = ['januar', 'Januar', 'janvier', 'enero'];
         // Output: what a view and a route echo, around a wait. PHP's output buffers are the process's,
         // so only phasync-ext's virtualize() keeps them apart
-        $ext = 'true' === (new Browser($addr))->get('/concurrent')['body'];
+        $ext             = 'true' === (new Browser($addr))->get('/concurrent')['body'];
         [$bodies]        = overlap($addr, \array_map(fn ($t) => "/probe/blade/$t", $tags));
         $seen['blade']   = $read($bodies);
         $want['blade']   = \array_map(fn ($t) => "$t-$t", $tags);

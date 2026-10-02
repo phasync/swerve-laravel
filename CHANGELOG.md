@@ -6,12 +6,12 @@
   longer take turns. Only `echo` and output buffers around a wait need phasync-ext.
 - `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with
   `url()`, redirects and signed URLs as under PHP-FPM.
-- Every request builds its own application, as PHP-FPM does, and drops it afterwards: no pool,
-  no cap, nothing shared. `app()` is an instance of the class `bootstrap/app.php` returned; a
-  `final` subclass is refused at start.
-- No Laravel Octane: the adapter bootstraps the application and converts PSR-7 itself, and
-  has no Octane events, `config/octane.php` or `octane` facade. `PoolWorker` is gone, and
-  `Handler::run()` runs its closure in a fresh application, as `php artisan` bootstraps one.
+- Requests run in pooled applications that Laravel Octane's listeners reset (`laravel/octane` is
+  now required): an application serves one request at a time, up to 16 idle ones are kept, and
+  the container goes back to its post-boot state after each request. A provider that reads the
+  request while it boots finds an empty one. `app()` is an instance of the class
+  `bootstrap/app.php` returned; a `final` subclass is refused at start.
+- `Handler::run()` runs its closure in a fresh application, as `php artisan` bootstraps one.
 - Laravel's process-wide pointers (`app()`, the facades, Eloquent's connection resolver and
   event dispatcher, ...) are proxies to the application of the request that runs. Callbacks
   that Laravel registers in static lists for every application (queue payloads, Artisan
