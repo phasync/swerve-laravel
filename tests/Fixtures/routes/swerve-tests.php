@@ -328,6 +328,7 @@ Route::get('/widget/{name}', function (Request $request, string $name) {
 });
 
 // The application class bootstrap/app.php returned (APP_CLASS)
+Route::get('/root-url', fn () => ['url' => url('/x')]);
 Route::get('/app-class', fn () => ['custom' => app() instanceof \App\CustomApplication, 'marker' => app()->swerveTestMarker()]);
 // Eloquent: the creating listener, observer and global scope of App\Models\Gadget on this request
 Route::get('/gadget/{name}', function (Request $request, string $name) {

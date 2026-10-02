@@ -73,7 +73,7 @@ final class Handler implements RequestHandlerInterface
     {
         $handler = self::$current;
         $task    = static fn () => \phasync::await(\phasync::go(
-            static fn () => $handler->withApplication(ConsoleKernel::class, static fn () => $callback()),
+            static fn () => $handler->withApplication(ConsoleKernel::class, static fn () => $callback(), null),
             context: new \stdClass(), // its own, so that the application is its own
         ));
 
@@ -126,18 +126,20 @@ final class Handler implements RequestHandlerInterface
                 $responded || $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
                 $app[ExceptionHandler::class]->report($e);
             }
-        });
+        }, $request);
     }
 
     /**
      * Run $code with a new application, bootstrapped by the kernel that $kernel names, as this
-     * coroutine's Laravel application; then flush it.
+     * coroutine's Laravel application; then flush it. The request is bound before the providers
+     * boot, as the HTTP kernel does, for those that use it (URL::forceRootUrl()).
      */
-    private function withApplication(string $kernel, \Closure $code): mixed
+    private function withApplication(string $kernel, \Closure $code, ?Request $request): mixed
     {
         $app = require "$this->root/bootstrap/app.php";
         Current::set($app);
         try {
+            $request && $app->instance('request', $request);
             $kernel = $app->make($kernel);
             // HandleExceptions adds PHP error and exception handlers and a shutdown function, none
             // removable: the first application did that, and they go through Current

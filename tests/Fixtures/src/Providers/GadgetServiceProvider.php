@@ -11,5 +11,7 @@ class GadgetServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Gadget::observe(GadgetObserver::class);
+        // A provider that needs the request while booting, as the HTTP kernel allows
+        \Illuminate\Support\Facades\URL::forceRootUrl(\request()->root());
     }
 }
