@@ -2,13 +2,13 @@
 
 namespace Swerve\Laravel;
 
-use Illuminate\Container\Container;
-use Illuminate\Pagination\PaginationState;
-use Laravel\Octane\ApplicationFactory;
-use Laravel\Octane\Events\RequestReceived;
-use Laravel\Octane\RequestContext;
-use phasync\Context\DefaultContext;
-use phasync\Util\Pool;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Contracts\Debug\ExceptionHandler;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Bootstrap\HandleExceptions;
+use Illuminate\Http\Request;
+use phasync\Util\Synchronized;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
@@ -19,19 +19,16 @@ use Swerve\Http\Virtual;
  *
  *     return new Swerve\Laravel\Handler(__DIR__);
  *
- * Octane's own Worker boots the application and dispatches WorkerStarting. Per request, the
- * Worker clones the booted application into a sandbox, dispatches Octane's events
- * (RequestReceived, RequestHandled, RequestTerminated, OperationTerminated) to Octane's listeners
- * and to those of packages such as Livewire, Inertia and Sentry, and flushes the sandbox. The
- * response goes to swerve as soon as it exists; terminate() and defer() callbacks run after that.
+ * Every request runs as under PHP-FPM, in an application of its own: bootstrap/app.php is
+ * required, the HTTP kernel bootstraps and handles the request, and terminates it (terminate()
+ * and defer() callbacks, after the response went to swerve). Then the application is flushed and
+ * dropped. Requests share the worker's classes and opcache, and PHP's static properties.
  *
- * A booted application serves one request at a time: its sandboxes share its router, session
- * store, auth guards, translator, view factory, cookie queue and database connections. With
- * phasync-ext's virtualize() (each request's output buffers its own), a worker boots more of
- * them, up to $apps, while requests overlap; Laravel's process-wide pointers to "the"
- * application (app(), the facades, Eloquent's connection resolver, ...) follow the request's
- * coroutine (Current). Without it, a worker serves one request at a time; the others wait
- * without blocking the worker's connections. See docs/concurrency.md.
+ * With phasync-ext's virtualize() (each request's output buffers its own), requests overlap in
+ * a worker whenever one waits. Laravel's process-wide pointers to "the" application (app(), the
+ * facades, Eloquent's connection resolver, ...) follow the request's coroutine (Current).
+ * Without it, a worker serves one request at a time; the others wait without blocking the
+ * worker's connections.
  */
 final class Handler implements RequestHandlerInterface
 {
@@ -40,79 +37,57 @@ final class Handler implements RequestHandlerInterface
 
     private readonly Client $client;
 
-    /** @var Pool<PoolWorker> */
-    private readonly Pool $workers;
-
     /** Each request runs in phasync-ext's virtualize(): its output buffers are its own */
     private readonly bool $virtual;
 
     /**
      * @param string $root the application's root directory, where composer.json is
-     * @param int    $apps the most applications per worker, so the most requests served at once
-     *                     with phasync-ext; without it, one
      */
-    public function __construct(string $root, int $apps = 16)
+    public function __construct(private readonly string $root)
     {
-        $this->client  = $client = new Client();
+        // The first application only learns the application's class and warms opcache
+        $app = require "$root/bootstrap/app.php";
+        $app->make(ConsoleKernel::class)->bootstrap();
+        Current::install($app);
+        $this->client  = new Client($app->publicPath());
         $this->virtual = Virtual::available();
-        $factory       = new ApplicationFactory($root);
-        $this->workers = new Pool(static function () use ($factory, $client) {
-            $worker = new PoolWorker($factory, $client);
-            $worker->boot();
-            $client->boot($worker->application());
-            Current::$fallback ??= $worker->application();
-            Current::install(); // the boot pointed Laravel's globals at the new application
-            // Blade::render() registers this namespace once per process, on the first application
-            $app = $worker->application();
-            $app['view']->addNamespace('__components', $app['config']->get('view.compiled'));
-            // Octane gives the paginator the sandbox on each request: the proxy instead
-            $worker->application()['events']->listen(RequestReceived::class, static fn () => PaginationState::resolveUsing(Container::getInstance()));
-            // WorkerStopping: the worker's exit runs shutdown functions, after its last request
-            \register_shutdown_function($worker->terminate(...));
-
-            return $worker;
-        }, $this->virtual ? $apps : 1);
-        \phasync::run(fn () => $this->workers->release($this->workers->borrow()));
+        $app->flush();
         self::$current = $this;
     }
 
     /**
-     * Run Laravel code outside a request, such as in a WebSocket callback, as Octane runs a
-     * task: in a fresh copy of an application of its own, which no request uses meanwhile.
-     * Returns what $callback returns or throws what it throws.
+     * Run Laravel code outside a request, such as in a WebSocket callback: in a fresh
+     * application, bootstrapped as `php artisan` does, and dropped afterwards. Returns what
+     * $callback returns or throws what it throws.
      *
      *     foreach ($ws as $message) {
      *         Handler::run(fn () => Message::create(['user_id' => $userId, 'text' => $message]));
      *     }
      *
-     * The copy has no request, so no session or user (as in an Octane task): take the user
-     * before WebSocket::from().
+     * The application has no request, so no session or user: take the user before
+     * WebSocket::from(). Outside run() and a request, app(), the facades and Eloquent throw.
+     * Without phasync-ext it waits for its turn as a request does, so it is not callable from
+     * inside a request.
      */
     public static function run(\Closure $callback): mixed
     {
-        $workers = self::$current->workers;
-        $worker  = $workers->borrow();
-        try {
-            return \phasync::await(\phasync::go(static fn () => $worker->task($callback), context: new DefaultContext()));
-        } finally {
-            $workers->release($worker);
-        }
+        $handler = self::$current;
+        $task    = static fn () => \phasync::await(\phasync::go(
+            static fn () => $handler->withApplication(ConsoleKernel::class, static fn () => $callback()),
+            context: new \stdClass(), // its own, so that the application is its own
+        ));
+
+        return $handler->virtual ? $task() : Synchronized::run($handler, $task);
     }
 
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
-        // Reading and parsing the body happens here, before waiting for an application. The
-        // request's coroutines share swerve's phasync context for it, where Current finds its application
-        [$laravelRequest, $context] = $this->client->marshalRequest(new RequestContext(['psr' => $request]));
+        // Reading and parsing the body happens here, before the application is made
+        [$laravelRequest, $context] = $this->client->marshalRequest($request);
         \phasync::go(function () use ($laravelRequest, $context) {
             try {
-                $worker = $this->workers->borrow();
-                try {
-                    $run = static fn () => $worker->handle($laravelRequest, $context);
-                    $this->virtual ? Virtual::run($context['psr'], $run) : $run();
-                } finally {
-                    $this->workers->release($worker);
-                }
+                $serve = fn () => $this->serve($laravelRequest, $context);
+                $this->virtual ? Virtual::run($context['psr'], $serve) : Synchronized::run($this, $serve);
             } finally {
                 $context['done'] = true;
                 \phasync::raiseFlag($context);
@@ -121,12 +96,58 @@ final class Handler implements RequestHandlerInterface
         while (!isset($context['handed']) && !isset($context['done'])) {
             \phasync::awaitFlag($context);
         }
-        $response = $context['response'] ?? throw new \RuntimeException('The Laravel worker ended without a response');
+        $response = $context['response'] ?? throw new \RuntimeException('The Laravel application ended without a response');
         // Only swerve holds a streamed body now: dropping it tells the producer the client left
         unset($context['response']);
         $context['returned'] = true;
         \phasync::raiseFlag($context);
 
         return $response;
+    }
+
+    /** One request, in an application of its own. */
+    private function serve(Request $request, \ArrayObject $context): void
+    {
+        $this->withApplication(HttpKernel::class, function (Application $app) use ($request, $context) {
+            $this->client->bind($app, $context);
+            $kernel    = $app->make(HttpKernel::class);
+            $responded = false;
+            try {
+                \ob_start();
+                $response = $kernel->handle($request);
+                $output   = \ob_get_contents();
+                if (\ob_get_level()) {
+                    \ob_end_clean();
+                }
+                $this->client->respond($context, $response, $output);
+                $responded = true;
+                $kernel->terminate($request, $response);
+            } catch (\Throwable $e) {
+                $responded || $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
+                $app[ExceptionHandler::class]->report($e);
+            }
+        });
+    }
+
+    /**
+     * Run $code with a new application, bootstrapped by the kernel that $kernel names, as this
+     * coroutine's Laravel application; then flush it.
+     */
+    private function withApplication(string $kernel, \Closure $code): mixed
+    {
+        $app = require "$this->root/bootstrap/app.php";
+        Current::set($app);
+        try {
+            $kernel = $app->make($kernel);
+            // HandleExceptions adds PHP error and exception handlers and a shutdown function, none
+            // removable: the first application did that, and they go through Current
+            $app->bootstrapWith(\array_values(\array_diff((new \ReflectionMethod($kernel, 'bootstrappers'))->invoke($kernel), [HandleExceptions::class])));
+            Current::install($app);
+
+            return $code($app);
+        } finally {
+            $app->flush();
+            Current::unset();
+        }
     }
 }

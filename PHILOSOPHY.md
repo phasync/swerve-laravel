@@ -2,9 +2,8 @@
 
 Software you depend on for a decade should be software you can own.
 
-- **Nothing you don't already have.** This adapter depends on swerve, on Laravel, which your
-  application already uses, and on Laravel's own Octane package, for the listeners that reset
-  Laravel between requests (not for its Swoole, RoadRunner or FrankenPHP servers). swerve, [phasync](https://github.com/phasync/phasync) and
+- **Nothing you don't already have.** This adapter depends on swerve and on Laravel, which your
+  application already uses; not on Octane. swerve, [phasync](https://github.com/phasync/phasync) and
   [phasync-ext](https://github.com/phasync/phasync-ext) depend only on each other: no dependency
   tree to audit, no upstream to wait for, no churn you did not choose.
 - **Small enough to own whole.** The adapter is a few hundred lines; swerve and phasync about

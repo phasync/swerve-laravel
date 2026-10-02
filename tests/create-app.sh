@@ -25,5 +25,13 @@ sed -i "s/'busy_timeout' => null/'busy_timeout' => 5000/; s/'journal_mode' => nu
 
 cp ../routes/swerve-tests.php routes/
 grep -q swerve-tests.php routes/web.php || echo "require __DIR__.'/swerve-tests.php';" >> routes/web.php
+
+# An application subclass, which bootstrap/app.php returns when APP_CLASS is set; and a model that
+# registers a listener and a global scope in boot(), with an observer registered by a provider
+cp -R ../src/. app/
+cp ../migrations/* database/migrations/
+grep -q APP_CLASS bootstrap/app.php || sed -i 's/^return Application::configure(/return (getenv("APP_CLASS") ?: Application::class)::configure(/' bootstrap/app.php
+grep -q GadgetServiceProvider bootstrap/providers.php || sed -i 's/AppServiceProvider::class,/&\n    App\\Providers\\GadgetServiceProvider::class,/' bootstrap/providers.php
+php artisan migrate --force --no-interaction > /dev/null
 # The only file an application adds to run on swerve
 printf "<?php\n\nrequire __DIR__.'/vendor/autoload.php';\n\nreturn new Swerve\\\\Laravel\\\\Handler(__DIR__);\n" > swerve.php

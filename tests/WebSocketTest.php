@@ -118,15 +118,15 @@ test('identity: the user taken before WebSocket::from() is the socket\'s own; La
         $bobWs  = ws_connect($addr, '/ws/me', $cookie($bob));
         $anonWs = ws_connect($addr, '/ws/me');
 
-        // Between requests, Laravel's services refer to the last request's application copy, which is gone
-        $gone = Illuminate\Contracts\Container\BindingResolutionException::class;
+        // The callback runs outside any request, and its application is gone
+        $gone = LogicException::class;
         foreach ([[$annWs, 'ann'], [$bobWs, 'bob'], [$anonWs, null]] as [$conn, $name]) {
             ws_send($conn, 'hi');
             expect(\json_decode(ws_read($conn)[1], true))->toBe(['user' => $name, 'auth' => $gone, 'db' => $gone, 'run' => $name, 'message' => 'hi']);
         }
 
-        // While bob's ordinary request runs, Auth in ann's callback says bob; Handler::run() waits
-        // for its turn, unless the worker serves requests at once (phasync-ext's virtualize())
+        // While bob's ordinary request runs, ann's callback still has no application of its own, and
+        // Handler::run() waits for its turn, unless the worker serves requests at once (phasync-ext)
         $concurrent = 'true' === (new Browser($addr))->get('/concurrent')['body'];
         $multi      = \curl_multi_init();
         $slow       = \curl_init("http://$addr/slow-me?s=1");
@@ -138,7 +138,7 @@ test('identity: the user taken before WebSocket::from() is the socket\'s own; La
             \curl_multi_select($multi, 0.02);
         }
         ws_send($annWs, 'during');
-        expect(\json_decode(ws_read($annWs)[1], true))->toBe(['user' => 'ann', 'auth' => 'bob', 'db' => 'ann', 'run' => 'ann', 'message' => 'during'])
+        expect(\json_decode(ws_read($annWs)[1], true))->toBe(['user' => 'ann', 'auth' => $gone, 'db' => $gone, 'run' => 'ann', 'message' => 'during'])
             ->and(\microtime(true) - $start)->{$concurrent ? 'toBeLessThan' : 'toBeGreaterThan'}($concurrent ? 0.7 : 0.9);
         do {
             \curl_multi_exec($multi, $running);

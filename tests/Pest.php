@@ -4,7 +4,8 @@
  * The tests run the Laravel application in tests/Fixtures/app (made by tests/create-app.sh) on
  * a real swerve, the way users run it. SWERVE_PHP_ARGS adds PHP options, such as loading
  * phasync-ext: CI runs the suite without and with it. SWERVE_TEST_PORTS is the range of ports
- * the tests may listen on (default 18700-18749).
+ * the tests may listen on (default 18700-18749). The server runs with opcache, as in production:
+ * without it every request would compile the application's files again, and PHP keeps part of that.
  */
 
 const APP = __DIR__ . '/Fixtures/app';
@@ -26,13 +27,15 @@ function app_start(int $workers = 2, array $env = []): array
     $addr     = "127.0.0.1:$port";
     $log      = \tempnam(\sys_get_temp_dir(), 'swerve-log');
     $php      = \trim((string) \getenv('SWERVE_PHP_ARGS'));
-    $cmd      = 'exec ' . \PHP_BINARY . " $php " . \escapeshellarg(APP . '/vendor/bin/swerve') . " --workers=$workers --grace=5 --http=$addr --log=" . \escapeshellarg($log) . ' ' . \escapeshellarg(APP . '/swerve.php');
+    $cmd      = 'exec ' . \PHP_BINARY . " -d opcache.enable_cli=1 $php " . \escapeshellarg(APP . '/vendor/bin/swerve') . " --workers=$workers --grace=5 --http=$addr --log=" . \escapeshellarg($log) . ' ' . \escapeshellarg(APP . '/swerve.php');
     $proc     = \proc_open($cmd, [['file', '/dev/null', 'r'], ['file', '/dev/null', 'w'], ['file', '/dev/null', 'w']], $pipes, APP, $env + \getenv());
     $deadline = \microtime(true) + 20;
     $ch       = \curl_init("http://$addr/json");
     \curl_setopt_array($ch, [\CURLOPT_RETURNTRANSFER => true, \CURLOPT_TIMEOUT => 1]);
     while (false === \curl_exec($ch)) {
-        if (\microtime(true) > $deadline) {
+        if (\microtime(true) > $deadline || !\proc_get_status($proc)['running']) {
+            app_stop($proc);
+
             throw new RuntimeException("swerve did not start:\n" . \file_get_contents($log));
         }
         \usleep(100_000);

@@ -5,13 +5,15 @@
 [![PHP](https://img.shields.io/packagist/dependency-v/phasync/swerve-laravel/php)](https://packagist.org/packages/phasync/swerve-laravel)
 ![License](https://img.shields.io/github/license/phasync/swerve-laravel)
 
-**Your Laravel application, booted once and kept warm.** [swerve](https://github.com/phasync/swerve)
+**Your Laravel application, one request waiting while another runs.** [swerve](https://github.com/phasync/swerve)
 is a PHP application server: long-running workers that serve HTTP/1.1 themselves, stream
 request and response bodies, and hold WebSockets and Server-Sent Events. This package lets it
-run a Laravel application unchanged.
+run a Laravel application unchanged, with each request in an application of its own, as under
+PHP-FPM, and with phasync-ext requests that wait (a query, an API call, `sleep()`) overlap in
+one worker.
 
 ```bash
-composer config minimum-stability alpha   # while swerve is in alpha
+composer config minimum-stability beta    # while swerve is in beta
 composer config prefer-stable true         # everything else stays stable
 composer require phasync/swerve-laravel
 ```
@@ -76,12 +78,9 @@ Every subscriber sees a topic's messages in the same order. Messages published b
 arrive in the order published; two requests in different workers may publish in the other
 order, so give messages that carry state a version from your database.
 
-**Take the user first.** The callback runs outside any request. Laravel keeps the current
-request, session, user and services in process-wide state, so inside the callback `auth()`,
-`session()`, `request()` and the facades see whichever request the worker runs at that moment,
-or, between requests, the application copy of the last one, which is gone: there the database,
-Eloquent and `Auth` throw. Read what the socket needs before `WebSocket::from()`, and run
-Laravel code from the callback with `Handler::run()`:
+**Take the user first.** The callback runs outside any request, and its application is gone: in
+it `app()`, the facades and Eloquent throw. Read what the socket needs before
+`WebSocket::from()`, and run Laravel code from the callback with `Handler::run()`:
 
 ```php
 use Swerve\Laravel\Handler;
@@ -98,10 +97,10 @@ Route::get('/chat', function (Request $request, ServerRequestInterface $psr) {
 })->middleware('auth');
 ```
 
-`Handler::run()` runs its closure as Octane runs a task: in a fresh copy of the application,
-with Octane's listeners, and in the worker's turn, so it waits while a request runs. It returns
-what the closure returns and throws what it throws. The copy has no request, session or user;
-not callable from inside a request, which holds the turn already.
+`Handler::run()` runs its closure in a fresh application, bootstrapped as `php artisan` does,
+and drops it afterwards. It returns what the closure returns and throws what it throws. The
+application has no request, session or user. Without phasync-ext it waits for its turn like a
+request does, so it is not callable from inside a request.
 
 An exception thrown by the callback closes the socket with 1011 and is written to swerve's log,
 not to Laravel's exception handler.
@@ -123,27 +122,26 @@ results](benchmarks/).
 
 ## How it runs
 
-The package is a server for [Laravel Octane](https://laravel.com/docs/octane): Octane's own
-`Worker` runs the application, and swerve serves it. Octane's Swoole, RoadRunner and
-FrankenPHP servers are not used.
+Every request runs as under PHP-FPM, and nothing is shared between requests but classes,
+opcache and PHP's static properties. The adapter does not depend on Laravel Octane.
 
-- **Once per worker:** Octane boots `bootstrap/app.php` (the HTTP kernel's bootstrappers, the
-  deferred providers, the services in `octane.warm`) and dispatches `WorkerStarting`.
+- **Once per worker:** `bootstrap/app.php` is required and bootstrapped once, to learn the
+  application's class and warm opcache. Then it is dropped.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
   fields, JSON, and uploads, which stay swerve's temporary files (no copy; deleted after the
-  request unless moved). Then Octane clones the booted application into a sandbox, dispatches
-  `RequestReceived`, runs the HTTP kernel, and the response goes to swerve. After that come
-  `RequestHandled`, `terminate()` with the `defer()` callbacks, `RequestTerminated` and
-  `OperationTerminated`, and the sandbox is flushed. Octane's listeners reset what Laravel
-  keeps between requests (auth guards, the session store, queued cookies, the config and URL
-  generator sandboxes, ...), and so do the Octane listeners of packages such as Livewire,
-  Inertia and Sentry. Add your own in `config/octane.php` (`php artisan vendor:publish
-  --tag=octane-config`).
-- **Concurrency:** one Laravel request at a time per worker. Laravel keeps the current request,
-  session, user and container in process-wide globals, so two requests in one worker would take
-  over each other's session and login. Requests waiting for their turn are suspended
-  (`phasync\Util\Synchronized`): meanwhile the worker goes on accepting connections, reading
-  request bodies, writing responses and serving static files and WebSockets.
+  request unless moved). Then `bootstrap/app.php` is required again, the HTTP kernel
+  bootstraps (config, providers, `boot()`), handles the request and the response goes to
+  swerve. After that `terminate()` runs, with the `defer()` callbacks, and the application is
+  flushed and dropped. Nothing needs resetting, and no Octane event or `config/octane.php` is
+  involved. `app()` is an instance of the class `bootstrap/app.php` returned (`Application`, or
+  your subclass of it); a `final` subclass is refused at start.
+- **Concurrency:** Laravel keeps "the" application in process-wide pointers (`app()`, the
+  facades, Eloquent's connection resolver and event dispatcher, ...). They are proxies that
+  forward to the application of the request that runs, so with phasync-ext requests that wait
+  overlap in one worker, each in its own application, sharing nothing. Without phasync-ext a
+  worker serves one request at a time; the others wait (`phasync\Util\Synchronized`) while the
+  worker goes on accepting connections, reading request bodies, writing responses and serving
+  static files and WebSockets.
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
@@ -153,14 +151,20 @@ FrankenPHP servers are not used.
 
 ## Before you deploy
 
-- **Size `--workers` like PHP-FPM's `pm.max_children`.** A worker runs one Laravel request at a
-  time, so a request that waits (a slow query, an API call) holds up the Laravel requests queued
-  in its worker; phasync-ext doesn't change that. The kernel hands connections to workers
-  without regard to how busy they are, so a slow request can delay requests that another
-  worker would have served at once.
-- **A streamed response holds its worker's turn** until the callback returns: an endless
-  Server-Sent Events loop is one worker per client. For many clients, use a WebSocket, or
-  swerve's [publish and subscribe](https://github.com/phasync/swerve#publish-and-subscribe).
+- **Use phasync-ext for concurrency.** Without it a worker runs one Laravel request at a time
+  (size `--workers` like PHP-FPM's `pm.max_children`), and a request that waits holds up the
+  others queued in its worker. With it they overlap, each building an application of its own:
+  memory is that of one application per request in flight.
+- **Run swerve with opcache** (`php -d opcache.enable_cli=1 vendor/bin/swerve ...`, or in the
+  CLI's `php.ini`): without it every application recompiles Laravel's files, which is slow and
+  makes the worker's memory grow.
+- **Each request builds its application,** as PHP-FPM does: what your providers do at boot
+  costs time on every request. A provider that waits (a query, an API call) while it boots
+  lets another request see Laravel's pointers at their raw state: do that work in a route or a
+  listener.
+- **A streamed response holds its worker's turn** until the callback returns, without
+  phasync-ext: an endless Server-Sent Events loop is one worker per client. For many clients,
+  use a WebSocket, or swerve's [publish and subscribe](https://github.com/phasync/swerve#publish-and-subscribe).
   When a client leaves, the callback is cancelled at its next wait, which needs phasync-ext
   for `sleep()` (or `phasync::sleep()` without it); a callback that never waits runs on.
 - **A WebSocket callback runs outside any request:** take the user and anything else it needs
@@ -168,13 +172,17 @@ FrankenPHP servers are not used.
   Eloquent, logging, dispatching jobs) in `Handler::run()`. See [WebSockets](#websockets).
 - **Open WebSockets count as connections:** without phasync-ext a worker holds about 960; see
   swerve's [sizing](https://github.com/phasync/swerve/blob/main/docs/production.md#sizing).
-- **Work after the response holds the worker's turn:** `defer()` callbacks and terminable
-  middleware run before the next Laravel request of that worker, so keep them short or queue
-  them. A draining worker (a reload, a shutdown) waits for them, up to `--grace`.
+- **Work after the response holds the worker's turn** without phasync-ext: `defer()` callbacks
+  and terminable middleware run before the next Laravel request of that worker, so keep them
+  short or queue them. A draining worker (a reload, a shutdown) waits for them, up to `--grace`.
 - **`exit`, `die()` and `dd()` end the worker**, and the requests it serves with it. Use
   `dump()`.
-- **State in static properties and singletons lives on** from request to request, as under
-  Octane: register per-request services with `$app->scoped()`, or list them in `octane.flush`.
+- **Your own static properties live on** from request to request, shared by the requests of a
+  worker; singletons and everything in the container die with the request's application.
+  Eloquent boots a model once per process, and puts the listeners of its `boot()` in the
+  application that is current then: a model that no provider uses, first used by a request
+  after another request used it, misses them. Register model events in a provider, or use
+  observers there.
 - **Multipart `PUT` and `PATCH` bodies are not parsed**; url-encoded and JSON ones are. Send
   forms with files as `POST` with `_method=PUT`.
 - **Code and config changes need a reload:** `--watch` during development, `SIGHUP` (a rolling

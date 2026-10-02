@@ -4,68 +4,61 @@ namespace Swerve\Laravel;
 
 use Illuminate\Foundation\Application;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Routing\Events\PreparingResponse;
-use Laravel\Octane\Contracts\Client as OctaneClient;
-use Laravel\Octane\Events\RequestReceived;
-use Laravel\Octane\Octane;
-use Laravel\Octane\OctaneResponse;
-use Laravel\Octane\RequestContext;
 use phasync\CancelledException;
+use phasync\Psr\Response;
+use phasync\Psr\StringStream;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\UploadedFileInterface;
-use Swerve\Http\Message\Response;
-use Swerve\Http\Message\Stream;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
-use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
+use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
- * Octane's server side for swerve: turns swerve's PSR-7 requests into Laravel requests, and
+ * The two sides of the exchange with swerve: turns its PSR-7 requests into Laravel requests, and
  * Laravel's responses into PSR-7 responses handed to the waiting Handler::handle().
+ *
+ * A request's state is an ArrayObject, its "context": 'psr' is swerve's request, and 'handed',
+ * 'response', 'returned' and 'upgrade' tell Handler::handle() and the coroutine running Laravel
+ * where they are.
  *
  * @internal
  */
-final class Client implements OctaneClient
+final class Client
 {
-    private string $public;
-
-    /**
-     * The requests in flight. Laravel keeps its last request after it ended: weak, so that
-     * swerve's request (and its uploaded files) goes when the request is over.
-     *
-     * @var \WeakMap<Request, \WeakReference<RequestContext>>
-     */
-    private ?\WeakMap $contexts = null;
-
-    public function boot(Application $app): void
+    public function __construct(private readonly string $public)
     {
-        $this->public   = $app->publicPath();
-        $this->contexts ??= new \WeakMap();
+    }
+
+    /** Give the routes of $app swerve's request, and swerve a 101 response to send as it is. */
+    public function bind(Application $app, \ArrayObject $context): void
+    {
         // A route that asks for a ServerRequestInterface gets swerve's own request; for an
         // upgrade its body is the connection, and the route may return WebSocket::from(...)
-        $app['events']->listen(RequestReceived::class, function (RequestReceived $event) {
-            $event->sandbox->instance(ServerRequestInterface::class, $this->contexts[$event->request]->get()['psr']);
-        });
-        // Laravel turns a PSR-7 response into its own: a 101 is kept, and handed to swerve as it is
-        $app['events']->listen(PreparingResponse::class, function (PreparingResponse $event) {
+        $app->instance(ServerRequestInterface::class, $context['psr']);
+        // Laravel turns a PSR-7 response into its own: a 101 is kept
+        $app['events']->listen(PreparingResponse::class, static function (PreparingResponse $event) use ($context) {
             if ($event->response instanceof ResponseInterface && 101 === $event->response->getStatusCode()) {
-                $this->contexts[$event->request]->get()['upgrade'] = $event->response;
+                $context['upgrade'] = $event->response;
             }
         });
     }
 
     /**
-     * The Laravel request for $context['psr'], as PHP-FPM and Request::capture() would make it.
+     * The Laravel request for $psr, as PHP-FPM and Request::capture() would make it, and the
+     * context to run it in.
+     *
+     * @return array{0: Request, 1: \ArrayObject}
      */
-    public function marshalRequest(RequestContext $context): array
+    public function marshalRequest(ServerRequestInterface $psr): array
     {
-        /** @var ServerRequestInterface $psr */
-        $psr    = $context['psr'];
-        $uri    = $psr->getUri();
-        $method = $psr->getMethod();
-        $server = [
+        $context = new \ArrayObject(['psr' => $psr]);
+        $uri     = $psr->getUri();
+        $method  = $psr->getMethod();
+        $server  = [
             'SERVER_NAME'     => $uri->getHost(),
             'SERVER_PORT'     => $uri->getPort() ?? 80,
             'QUERY_STRING'    => $uri->getQuery(),
@@ -91,28 +84,26 @@ final class Client implements OctaneClient
             $post  = $psr->getParsedBody() ?? [];
             $files = $psr->getUploadedFiles();
             // Swerve's temporary files stay while swerve's request lives, and are deleted with
-            // it unless moved; Octane's is_uploaded_file() and move_uploaded_file() accept them
+            // it unless moved. Test mode, as they were not uploaded to PHP: is_uploaded_file()
+            // and move_uploaded_file() would refuse them
             \array_walk_recursive($files, static function (UploadedFileInterface &$file) {
                 $error = $file->getError();
-                $file  = new UploadedFile(\UPLOAD_ERR_OK === $error ? $file->getStream()->getMetadata('uri') : '', (string) $file->getClientFilename(), $file->getClientMediaType(), $error);
+                $file  = new UploadedFile(\UPLOAD_ERR_OK === $error ? $file->getStream()->getMetadata('uri') : '', (string) $file->getClientFilename(), $file->getClientMediaType(), $error, true);
             });
             $content = (string) $psr->getBody();
             if (\in_array($method, ['PUT', 'PATCH', 'DELETE', 'QUERY'], true) && \str_starts_with(\strtolower($psr->getHeaderLine('Content-Type')), 'application/x-www-form-urlencoded')) {
                 \parse_str($content, $post);
             }
             // Swerve's body was read: the route's ServerRequestInterface gets its bytes again
-            $context['psr'] = $psr->withBody(Stream::cast($content))->withParsedBody($post ?: $psr->getParsedBody());
+            $context['psr'] = $psr->withBody(new StringStream($content))->withParsedBody($post ?: $psr->getParsedBody());
         }
 
-        $request                  = Request::createFromBase(new SymfonyRequest($psr->getQueryParams(), $post, [], $psr->getCookieParams(), $files, $server, $content));
-        $this->contexts[$request] = \WeakReference::create($context);
-
-        return [$request, $context];
+        return [Request::createFromBase(new SymfonyRequest($psr->getQueryParams(), $post, [], $psr->getCookieParams(), $files, $server, $content)), $context];
     }
 
-    public function respond(RequestContext $context, OctaneResponse $octaneResponse): void
+    /** Hand $response to swerve: what the request echoed ($output) goes before its content. */
+    public function respond(\ArrayObject $context, SymfonyResponse $response, string $output): void
     {
-        $response = $octaneResponse->response;
         $status   = $response->getStatusCode();
         if (101 === $status && isset($context['upgrade'])) {
             $this->hand($context, $context['upgrade']);
@@ -123,22 +114,24 @@ final class Client implements OctaneClient
         foreach ($response->headers->getCookies() as $cookie) {
             $headers['Set-Cookie'][] = (string) $cookie;
         }
-        // What the request echoed goes first, as under PHP-FPM (as Octane does, not for files)
-        $output = $response instanceof BinaryFileResponse ? '' : (string) $octaneResponse->outputBuffer;
+        // What the request echoed goes first, as under PHP-FPM; not before a file
+        if ($response instanceof BinaryFileResponse) {
+            $output = '';
+        }
         if (!$response instanceof StreamedResponse && !$response instanceof BinaryFileResponse) {
-            $this->hand($context, new Response($output . $response->getContent(), $headers, $status));
+            $this->hand($context, new Response($status, $headers, $output . $response->getContent()));
 
             return;
         }
         if ('HEAD' === $context['psr']->getMethod() || 204 === $status || 304 === $status) {
-            $this->hand($context, new Response('', $headers, $status)); // swerve won't read a body
+            $this->hand($context, new Response($status, $headers)); // swerve won't read a body
 
             return;
         }
 
         // Streamed: the head goes now, and each piece as the callback echoes it
         $pipe = new Pipe();
-        $this->hand($context, new Response(new StreamedBody($pipe), $headers, $status));
+        $this->hand($context, new Response($status, $headers, new StreamedBody($pipe)));
         $fiber = \Fiber::getCurrent();
         $gone  = new class('The client left') extends CancelledException {
             /** Not an error: Laravel's exception handler logs nothing when this returns. */
@@ -179,16 +172,17 @@ final class Client implements OctaneClient
         }
     }
 
-    public function error(\Throwable $e, Application $app, Request $request, RequestContext $context): void
+    /** A 500 for an exception the HTTP kernel did not turn into a response. */
+    public function error(\ArrayObject $context, \Throwable $e, bool $debug): void
     {
-        $this->hand($context, new Response(Octane::formatExceptionForClient($e, (bool) $app['config']->get('app.debug')), ['Content-Type' => 'text/plain'], 500));
+        $this->hand($context, new Response(500, ['Content-Type' => 'text/plain'], $debug ? (string) $e : 'Internal server error.'));
     }
 
     /**
      * Give swerve the response, and wait until Handler::handle() returned it: the rest of the
      * request (terminate(), defer(), a streamed body) runs once swerve is sending it.
      */
-    private function hand(RequestContext $context, ResponseInterface $response): void
+    private function hand(\ArrayObject $context, ResponseInterface $response): void
     {
         if (!isset($context['handed'])) { // not again for an error after a streamed response began
             $context['handed']   = true;

@@ -12,18 +12,22 @@ use Carbon\Translator;
  */
 final class CarbonTranslator extends Translator
 {
-    private const KEY = 'swerve.laravel.carbon-locale';
+    /** @var \WeakMap<object, string>|null the locale of each request's context */
+    private static ?\WeakMap $locales = null;
 
     public function getLocale(): string
     {
-        return Current::context()[self::KEY] ?? parent::getLocale();
+        $context = Current::context();
+
+        return (null === $context ? null : self::$locales[$context] ?? null) ?? parent::getLocale();
     }
 
     public function setLocale($locale): void
     {
         parent::setLocale($locale);
         if ($context = Current::context()) {
-            $context[self::KEY] = parent::getLocale();
+            self::$locales ??= new \WeakMap();
+            self::$locales[$context] = parent::getLocale();
         }
     }
 }

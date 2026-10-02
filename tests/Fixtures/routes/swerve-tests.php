@@ -164,7 +164,12 @@ Route::get('/slow', function (Request $request) {
 
     return 'slow done';
 });
-Route::get('/memory', fn () => \memory_get_usage());
+// Collected first: an application is cyclic garbage until the next collection, which makes usage a sawtooth
+Route::get('/memory', function () {
+    \gc_collect_cycles();
+
+    return \memory_get_usage();
+});
 // Whether this worker serves several requests at once
 Route::get('/concurrent', fn () => \json_encode(\Swerve\Http\Virtual::available()))->withoutMiddleware('web');
 
@@ -211,8 +216,8 @@ Route::get('/publish', function (Request $request) {
     return 'published';
 });
 
-// Identity: the user taken from the request before WebSocket::from(), and what Auth says
-// inside the callback, which is whatever request runs in the worker at that moment
+// Identity: the user taken from the request before WebSocket::from(), and what Laravel says
+// inside the callback, which runs outside any request
 Route::get('/login-as/{name}', function (string $name) {
     Auth::login(User::firstOrCreate(['email' => "$name@example.com"], ['name' => $name, 'password' => 'secret']));
 
@@ -232,7 +237,7 @@ Route::get('/ws/me', function (Request $request, ServerRequestInterface $psr) {
         foreach ($ws as $message) {
             $ws->send(\json_encode([
                 'user'    => $user?->name,
-                'auth'    => $inside(fn () => Auth::user()?->name),     // wrong: whichever request runs now
+                'auth'    => $inside(fn () => Auth::user()?->name),           // wrong: outside a request
                 'db'      => $inside(fn () => User::find($user?->id)?->name), // wrong: outside a request
                 'run'     => Handler::run(fn () => User::find($user?->id)?->name),
                 'message' => $message,
@@ -241,9 +246,12 @@ Route::get('/ws/me', function (Request $request, ServerRequestInterface $psr) {
     });
 });
 Route::get('/slow-me', function (Request $request) {
+    // Resolved before waiting: User::find() in a WebSocket callback outside a request throws while the
+    // model is "being booted", and a request that boots User afterwards would fail until the next one starts
+    $name = Auth::user()?->name;
     swerve_test_wait((float) $request->query('s', 1));
 
-    return Auth::user()?->name;
+    return $name;
 });
 
 // Concurrency probes (tests/ConcurrencyTest.php): each sets one piece of request state to {tag},
@@ -311,3 +319,25 @@ Route::get('/probe-db/write/{key}', function (string $key) {
     return ['level' => DB::transactionLevel()];
 });
 Route::get('/probe-db/exists/{key}', fn (string $key) => ['exists' => DB::table('cache')->where('key', $key)->exists()]);
+
+// A model that no provider touches, first used after a wait: ?pre= seconds
+Route::get('/widget/{name}', function (Request $request, string $name) {
+    swerve_test_wait((float) $request->query('pre', 0));
+
+    return ['listener' => \App\Models\Widget::create(['name' => $name])->listener_calls];
+});
+
+// The application class bootstrap/app.php returned (APP_CLASS)
+Route::get('/app-class', fn () => ['custom' => app() instanceof \App\CustomApplication, 'marker' => app()->swerveTestMarker()]);
+// Eloquent: the creating listener, observer and global scope of App\Models\Gadget on this request
+Route::get('/gadget/{name}', function (Request $request, string $name) {
+    $gadget = \App\Models\Gadget::create(['name' => $name, 'hidden' => (bool) $request->query('hidden')]);
+    swerve_test_wait((float) $request->query('wait', 0.1));
+
+    return [
+        'listener' => $gadget->listener_calls,
+        'observer' => $gadget->observer_calls,
+        'visible'  => \App\Models\Gadget::where('name', $name)->count(),
+        'all'      => \App\Models\Gadget::withoutGlobalScopes()->where('name', $name)->count(),
+    ];
+});
