@@ -99,8 +99,7 @@ Route::get('/chat', function (Request $request, ServerRequestInterface $psr) {
 
 `Handler::run()` runs its closure in a fresh application, bootstrapped as `php artisan` does,
 and drops it afterwards. It returns what the closure returns and throws what it throws. The
-application has no request, session or user. Without phasync-ext it waits for its turn like a
-request does, so it is not callable from inside a request.
+application has no request, session or user.
 
 An exception thrown by the callback closes the socket with 1011 and is written to swerve's log,
 not to Laravel's exception handler.
@@ -142,11 +141,15 @@ opcache and PHP's static properties. The adapter does not depend on Laravel Octa
   your subclass of it); a `final` subclass is refused at start.
 - **Concurrency:** Laravel keeps "the" application in process-wide pointers (`app()`, the
   facades, Eloquent's connection resolver and event dispatcher, ...). They are proxies that
-  forward to the application of the request that runs, so with phasync-ext requests that wait
-  overlap in one worker, each in its own application, sharing nothing. Without phasync-ext a
-  worker serves one request at a time; the others wait (`phasync\Util\Synchronized`) while the
-  worker goes on accepting connections, reading request bodies, writing responses and serving
-  static files and WebSockets.
+  forward to the application of the request that runs, so requests that wait overlap in one
+  worker, each in its own application, sharing nothing. A request waits in a coroutine
+  (`phasync::sleep()`, phasync's HTTP client, sockets) with or without phasync-ext; with it
+  `sleep()`, `usleep()`, PDO/mysqli queries, curl and `flock()` wait that way as well, and
+  without it they hold the worker, as under any other server. One thing needs phasync-ext:
+  Laravel's view engine buffers output (`ob_start()` in `PhpEngine`, and in `@section`,
+  `@component` and `@push`), and PHP's output buffers belong to the process. A wait inside a
+  view while it renders, such as a lazily loaded relation, mixes the output of requests that
+  overlap there, unless phasync-ext's `virtualize()` keeps each request's buffers apart.
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
@@ -180,9 +183,9 @@ opcache and PHP's static properties. The adapter does not depend on Laravel Octa
   Eloquent, logging, dispatching jobs) in `Handler::run()`. See [WebSockets](#websockets).
 - **Open WebSockets count as connections:** without phasync-ext a worker holds about 960; see
   swerve's [sizing](https://github.com/phasync/swerve/blob/main/docs/production.md#sizing).
-- **Work after the response holds the worker's turn** without phasync-ext: `defer()` callbacks
-  and terminable middleware run before the next Laravel request of that worker, so keep them
-  short or queue them. A draining worker (a reload, a shutdown) waits for them, up to `--grace`.
+- **Work after the response runs in the request's coroutine:** `defer()` callbacks and
+  terminable middleware run after the response went to swerve. A draining worker (a reload, a
+  shutdown) waits for them, up to `--grace`.
 - **`exit`, `die()` and `dd()` end the worker**, and the requests it serves with it. Use
   `dump()`.
 - **Your own static properties live on** from request to request, shared by the requests of a

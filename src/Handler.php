@@ -8,7 +8,6 @@ use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Bootstrap\HandleExceptions;
 use Illuminate\Http\Request;
-use phasync\Util\Synchronized;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
@@ -24,11 +23,10 @@ use Swerve\Http\Virtual;
  * and defer() callbacks, after the response went to swerve). Then the application is flushed and
  * dropped. Requests share the worker's classes and opcache, and PHP's static properties.
  *
- * With phasync-ext's virtualize() (each request's output buffers its own), requests overlap in
- * a worker whenever one waits. Laravel's process-wide pointers to "the" application (app(), the
- * facades, Eloquent's connection resolver, ...) follow the request's coroutine (Current).
- * Without it, a worker serves one request at a time; the others wait without blocking the
- * worker's connections.
+ * Requests overlap in a worker whenever one waits in a coroutine. Laravel's process-wide pointers
+ * to "the" application (app(), the facades, Eloquent's connection resolver, ...) follow the
+ * request's coroutine (Current). With phasync-ext's virtualize() each request's output buffers
+ * are its own too, which Laravel's view engine needs when a view waits while it renders.
  */
 final class Handler implements RequestHandlerInterface
 {
@@ -69,8 +67,6 @@ final class Handler implements RequestHandlerInterface
      *
      * The application has no request, so no session or user: take the user before
      * WebSocket::from(). Outside run() and a request, app(), the facades and Eloquent throw.
-     * Without phasync-ext it waits for its turn as a request does, so it is not callable from
-     * inside a request.
      */
     public static function run(\Closure $callback): mixed
     {
@@ -80,7 +76,7 @@ final class Handler implements RequestHandlerInterface
             context: new \stdClass(), // its own, so that the application is its own
         ));
 
-        return $handler->virtual ? $task() : Synchronized::run($handler, $task);
+        return $task();
     }
 
     public function handle(ServerRequestInterface $request): ResponseInterface
@@ -90,7 +86,7 @@ final class Handler implements RequestHandlerInterface
         \phasync::go(function () use ($laravelRequest, $context) {
             try {
                 $serve = fn () => $this->serve($laravelRequest, $context);
-                $this->virtual ? Virtual::run($context['psr'], $serve) : Synchronized::run($this, $serve);
+                $this->virtual ? Virtual::run($context['psr'], $serve) : $serve();
             } finally {
                 $context['done'] = true;
                 \phasync::raiseFlag($context);

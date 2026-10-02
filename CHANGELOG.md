@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Requests overlap in a worker without phasync-ext too, whenever one waits in a coroutine; they no
+  longer take turns. Only `echo` and output buffers around a wait need phasync-ext.
 - `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with
   `url()`, redirects and signed URLs as under PHP-FPM.
 - Every request builds its own application, as PHP-FPM does, and drops it afterwards: no pool,

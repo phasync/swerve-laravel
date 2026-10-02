@@ -126,8 +126,7 @@ test('identity: the user taken before WebSocket::from() is the socket\'s own; La
         }
 
         // While bob's ordinary request runs, ann's callback still has no application of its own, and
-        // Handler::run() waits for its turn, unless the worker serves requests at once (phasync-ext)
-        $concurrent = 'true' === (new Browser($addr))->get('/concurrent')['body'];
+        // Handler::run() does not wait for it
         $multi      = \curl_multi_init();
         $slow       = \curl_init("http://$addr/slow-me?s=1");
         \curl_setopt_array($slow, $bob->options('GET', [], null, $unused));
@@ -139,7 +138,7 @@ test('identity: the user taken before WebSocket::from() is the socket\'s own; La
         }
         ws_send($annWs, 'during');
         expect(\json_decode(ws_read($annWs)[1], true))->toBe(['user' => 'ann', 'auth' => $gone, 'db' => $gone, 'run' => 'ann', 'message' => 'during'])
-            ->and(\microtime(true) - $start)->{$concurrent ? 'toBeLessThan' : 'toBeGreaterThan'}($concurrent ? 0.7 : 0.9);
+            ->and(\microtime(true) - $start)->toBeLessThan(0.7);
         do {
             \curl_multi_exec($multi, $running);
             \curl_multi_select($multi, 0.05);

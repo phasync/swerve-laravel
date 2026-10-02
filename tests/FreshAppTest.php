@@ -51,10 +51,9 @@ test('a model\'s boot() listener and global scope, and a provider\'s observer, a
 // application. A model first used mid-request is booted by whichever request uses it first.
 test('a model that no provider boots misses its boot() listener in a request that waits while another one boots it', function () {
     with_app(function (string $addr) {
-        $concurrent = 'true' === (new Browser($addr))->get('/concurrent')['body'];
-        $requests   = [[new Browser($addr), '/widget/' . \bin2hex(\random_bytes(4)) . '?pre=0.4'], [new Browser($addr), '/widget/' . \bin2hex(\random_bytes(4))]];
+        $requests = [[new Browser($addr), '/widget/' . \bin2hex(\random_bytes(4)) . '?pre=0.4'], [new Browser($addr), '/widget/' . \bin2hex(\random_bytes(4))]];
         // Eloquent boots a model once per process, and its listeners go to the application that is current then
         expect(\array_map(fn ($r) => \json_decode($r['body'], true), overlapping($requests)))
-            ->toBe($concurrent ? [['listener' => null], ['listener' => 1]] : [['listener' => 1], ['listener' => 1]]);
+            ->toBe([['listener' => null], ['listener' => 1]]);
     }, workers: 1);
 });

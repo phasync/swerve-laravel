@@ -43,6 +43,13 @@ Route::get('/api/usleep', function (Request $request) {
     return ['waited' => (int) $request->query('ms', 10)];
 })->withoutMiddleware('web');
 
+// A wait of ?ms= that yields in a coroutine, with or without phasync-ext (usleep() only does with it)
+Route::get('/api/wait', function (Request $request) {
+    phasync::sleep(0.001 * (int) $request->query('ms', 10));
+
+    return ['waited' => (int) $request->query('ms', 10)];
+})->withoutMiddleware('web');
+
 Route::get('/form', fn () => Blade::render('<form method="post">@csrf<input name="name"></form>{{ $errors->first("name") }}'));
 Route::post('/form', function (Request $request) {
     $request->validate(['name' => 'required']);

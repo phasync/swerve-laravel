@@ -44,13 +44,18 @@ test('overlapping requests in one worker each keep their own request state', fun
         [$bodies]        = overlap($addr, ['/probe/carbon/nb', '/probe/carbon/de', '/probe/carbon/fr', '/probe/carbon/es']);
         $seen['carbon']  = $read($bodies);
         $want['carbon']  = ['januar', 'Januar', 'janvier', 'enero'];
-        // Output: what a view and a route echo, around a wait
+        // Output: what a view and a route echo, around a wait. PHP's output buffers are the process's,
+        // so only phasync-ext's virtualize() keeps them apart
+        $ext = 'true' === (new Browser($addr))->get('/concurrent')['body'];
         [$bodies]        = overlap($addr, \array_map(fn ($t) => "/probe/blade/$t", $tags));
         $seen['blade']   = $read($bodies);
         $want['blade']   = \array_map(fn ($t) => "$t-$t", $tags);
         [$bodies]        = overlap($addr, \array_map(fn ($t) => "/probe-echo/$t", $tags));
         $seen['echo']    = $bodies;
         $want['echo']    = \array_map(fn ($t) => "$t-$t", $tags);
+        if (!$ext) {
+            unset($seen['blade'], $want['blade'], $seen['echo'], $want['echo']);
+        }
         // A queued cookie goes with its own request's response only
         [, $browsers]    = overlap($addr, \array_map(fn ($t) => "/probe-cookie/$t", $tags));
         $seen['cookie']  = \array_map(fn (Browser $b) => \implode(',', \array_keys(\array_filter($b->cookies, fn ($k) => \str_starts_with($k, 'probe_'), \ARRAY_FILTER_USE_KEY))), $browsers);
@@ -66,13 +71,15 @@ test('overlapping requests in one worker each keep their own request state', fun
     expect($log)->not->toMatch('/error|exception/i');
 });
 
-test('with phasync-ext\'s virtualize(), requests waiting in one worker overlap; otherwise they take turns', function () {
+test('requests waiting in a coroutine overlap in one worker, and with phasync-ext so do those in usleep()', function () {
     with_app(function (string $addr) {
         $concurrent = 'true' === (new Browser($addr))->get('/concurrent')['body'];
-        $start      = \microtime(true);
-        [$bodies]   = overlap($addr, \array_fill(0, 8, '/api/usleep?ms=200'));
-        $elapsed    = \microtime(true) - $start;
-        expect($bodies)->toBe(\array_fill(0, 8, '{"waited":200}'))
-            ->and($elapsed)->{$concurrent ? 'toBeLessThan' : 'toBeGreaterThan'}($concurrent ? 0.8 : 1.6);
+        foreach (['wait' => true, 'usleep' => $concurrent] as $route => $overlaps) {
+            $start    = \microtime(true);
+            [$bodies] = overlap($addr, \array_fill(0, 8, "/api/$route?ms=200"));
+            $elapsed  = \microtime(true) - $start;
+            expect($bodies)->toBe(\array_fill(0, 8, '{"waited":200}'))
+                ->and($elapsed)->{$overlaps ? 'toBeLessThan' : 'toBeGreaterThan'}($overlaps ? 0.8 : 1.6);
+        }
     }, workers: 1);
 });
