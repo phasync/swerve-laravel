@@ -11,7 +11,7 @@ request and response bodies, and hold WebSockets and Server-Sent Events. This pa
 run a Laravel application unchanged.
 
 ```bash
-composer config minimum-stability alpha   # while swerve is in alpha
+composer config minimum-stability beta   # while swerve is in beta
 composer config prefer-stable true         # everything else stays stable
 composer require phasync/swerve-laravel
 ```
