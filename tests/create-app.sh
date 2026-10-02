@@ -24,6 +24,7 @@ composer require --no-interaction --no-progress --with-all-dependencies 'phasync
 sed -i "s/'busy_timeout' => null/'busy_timeout' => 5000/; s/'journal_mode' => null/'journal_mode' => 'wal'/; s/'synchronous' => null/'synchronous' => 'normal'/" config/database.php
 
 cp ../routes/swerve-tests.php routes/
+cp ../routes/adv-statics.php routes/ && { grep -q adv-statics.php routes/web.php || echo "require __DIR__.'/adv-statics.php';" >> routes/web.php; }
 grep -q swerve-tests.php routes/web.php || echo "require __DIR__.'/swerve-tests.php';" >> routes/web.php
 # The only file an application adds to run on swerve
 printf "<?php\n\nrequire __DIR__.'/vendor/autoload.php';\n\nreturn new Swerve\\\\Laravel\\\\Handler(__DIR__);\n" > swerve.php
