@@ -29,7 +29,7 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 final class Client
 {
-    public function __construct(private readonly string $public)
+    public function __construct(private readonly string $public, private readonly string $basePath = '')
     {
     }
 
@@ -64,9 +64,13 @@ final class Client
             'QUERY_STRING'    => $uri->getQuery(),
             'DOCUMENT_ROOT'   => $this->public,
             'SCRIPT_FILENAME' => $this->public . '/index.php',
-            'SCRIPT_NAME'     => '/index.php',
-            'PHP_SELF'        => '/index.php',
+            'SCRIPT_NAME'     => $this->basePath . '/index.php',
+            'PHP_SELF'        => $this->basePath . '/index.php',
         ] + $psr->getServerParams();
+        if ('' !== $this->basePath) {
+            // Symfony finds the base URL by matching SCRIPT_NAME against the request URI
+            $server['REQUEST_URI'] = $this->basePath . $server['REQUEST_URI'];
+        }
         foreach ($psr->getHeaders() as $name => $values) {
             $key          = \strtoupper(\strtr($name, '-', '_'));
             $key          = 'CONTENT_TYPE' === $key || 'CONTENT_LENGTH' === $key ? $key : "HTTP_$key";

@@ -160,6 +160,9 @@ opcache and PHP's static properties. The adapter does not depend on Laravel Octa
   (size `--workers` like PHP-FPM's `pm.max_children`), and a request that waits holds up the
   others queued in its worker. With it they overlap, each building an application of its own:
   memory is that of one application per request in flight.
+- **Behind a proxy that serves the application in a folder** (`https://example.com/app/`
+  forwarded to swerve as `/`), use `new Handler(__DIR__, '/app')`. `url()`, `route()`,
+  `back()` and signed URLs then include the folder, as under PHP-FPM.
 - **Run swerve with opcache** (`php -d opcache.enable_cli=1 vendor/bin/swerve ...`, or in the
   CLI's `php.ini`): without it every application recompiles Laravel's files, which is slow and
   makes the worker's memory grow.

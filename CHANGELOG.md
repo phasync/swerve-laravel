@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with
+  `url()`, redirects and signed URLs as under PHP-FPM.
 - Every request builds its own application, as PHP-FPM does, and drops it afterwards: no pool,
   no cap, nothing shared. `app()` is an instance of the class `bootstrap/app.php` returned; a
   `final` subclass is refused at start.

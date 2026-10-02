@@ -242,3 +242,13 @@ test('memory stays flat over 10,000 requests', function () {
         expect($after - $before)->toBeLessThan(512 * 1024);
     }, workers: 1);
 });
+
+test('served under a folder a proxy strips: URLs, redirects and the path are those of PHP-FPM', function () {
+    with_app(function (string $addr) {
+        $b     = new Browser($addr);
+        $where = \json_decode($b->get('/where?a=1')['body'], true);
+        expect($where)->toBe(['path' => 'where', 'full' => "http://$addr/app/where?a=1", 'base' => '/app', 'url' => "http://$addr/app/x", 'route' => "http://$addr/app/where"]);
+        $back = $b->request('GET', '/go-back', ["Referer: http://$addr/app/where"]);
+        expect($back['status'])->toBe(302)->and($back['body'])->toContain("http://$addr/app/where");
+    }, env: ['APP_BASE_PATH' => '/app/']);
+});

@@ -41,15 +41,18 @@ final class Handler implements RequestHandlerInterface
     private readonly bool $virtual;
 
     /**
-     * @param string $root the application's root directory, where composer.json is
+     * @param string $root     the application's root directory, where composer.json is
+     * @param string $basePath the folder the application is served under when a reverse proxy
+     *                         strips it before swerve sees the request, such as '/demos/app';
+     *                         url(), redirects and signed URLs then include it, as under PHP-FPM
      */
-    public function __construct(private readonly string $root)
+    public function __construct(private readonly string $root, private readonly string $basePath = '')
     {
         // The first application only learns the application's class and warms opcache
         $app = require "$root/bootstrap/app.php";
         $app->make(ConsoleKernel::class)->bootstrap();
         Current::install($app);
-        $this->client  = new Client($app->publicPath());
+        $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'));
         $this->virtual = Virtual::available();
         $app->flush();
         self::$current = $this;

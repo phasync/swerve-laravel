@@ -342,3 +342,7 @@ Route::get('/gadget/{name}', function (Request $request, string $name) {
         'all'      => \App\Models\Gadget::withoutGlobalScopes()->where('name', $name)->count(),
     ];
 });
+
+// The folder the application is served under (APP_BASE_PATH), as the request sees it
+Route::get('/where', fn (Request $request) => ['path' => $request->path(), 'full' => $request->fullUrl(), 'base' => $request->getBaseUrl(), 'url' => url('/x'), 'route' => route('where')])->name('where');
+Route::get('/go-back', fn () => back());
