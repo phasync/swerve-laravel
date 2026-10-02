@@ -84,6 +84,8 @@ final class Client
 
         $upgrade = $psr->hasHeader('Upgrade') && \str_contains(\strtolower($psr->getHeaderLine('Connection')), 'upgrade');
         if ($upgrade) {
+            // The route goes on running after it handed over the 101: a coroutine of its own
+            $context['detached'] = true;
             // The body is what the client sends after the handshake: the route reads it
             $post    = [];
             $files   = [];
@@ -188,17 +190,22 @@ final class Client
     }
 
     /**
-     * Give swerve the response, and wait until Handler::handle() returned it: the rest of the
-     * request (terminate(), defer(), a streamed body) runs once swerve is sending it.
+     * Give swerve the response. A request with a coroutine of its own waits until Handler::handle()
+     * returned it; one running in Virtual::run() releases that with its first output. Otherwise handle()
+     * returns it as soon as the application is done.
      */
     private function hand(\ArrayObject $context, ResponseInterface $response): void
     {
         if (!isset($context['handed'])) { // not again for an error after a streamed response began
             $context['handed']   = true;
             $context['response'] = $response;
-            \phasync::raiseFlag($context);
-            while (!isset($context['returned'])) {
-                \phasync::awaitFlag($context);
+            if (isset($context['detached'])) {
+                \phasync::raiseFlag($context);
+                while (!isset($context['returned'])) {
+                    \phasync::awaitFlag($context);
+                }
+            } elseif (isset($context['virtual'])) {
+                echo ' '; // the first output sends Virtual::run() the headers it returns on; the body is not used
             }
         }
     }

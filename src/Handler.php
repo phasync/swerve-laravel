@@ -16,6 +16,8 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Swerve\Http\Virtual;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 use Swerve\Swerve;
 
 /**
@@ -105,48 +107,71 @@ final class Handler implements RequestHandlerInterface
         // Reading and parsing the body happens here, before the application is made
         [$laravelRequest, $context] = $this->client->marshalRequest($request);
         $this->sweeping || $this->startSweeping();
-        \phasync::go(function () use ($laravelRequest, $context) {
-            try {
-                $serve = fn () => $this->serve($laravelRequest, $context);
-                $this->virtual ? Virtual::run($context['psr'], $serve) : $serve();
-            } finally {
-                $context['done'] = true;
-                \phasync::raiseFlag($context);
-            }
-        });
-        while (!isset($context['handed']) && !isset($context['done'])) {
+        $serve = fn () => $this->serve($laravelRequest, $context);
+        if (isset($context['detached'])) {
+            \phasync::go(function () use ($serve, $context) {
+                try {
+                    $this->virtual ? Virtual::run($context['psr'], $serve) : $serve();
+                } finally {
+                    $context['done'] = true;
+                    \phasync::raiseFlag($context);
+                }
+            });
+        } elseif ($this->virtual) {
+            $context['virtual'] = true; // handing over the response releases Virtual::run(), the rest goes on in it
+            Virtual::run($context['psr'], $serve);
+        } else {
+            $serve();
+        }
+        while (isset($context['detached']) && !isset($context['handed']) && !isset($context['done'])) {
             \phasync::awaitFlag($context);
         }
         $response = $context['response'] ?? throw new \RuntimeException('The Laravel application ended without a response');
         // Only swerve holds a streamed body now: dropping it tells the producer the client left
         unset($context['response']);
-        $context['returned'] = true;
-        \phasync::raiseFlag($context);
+        if (isset($context['detached'])) {
+            $context['returned'] = true;
+            \phasync::raiseFlag($context);
+        }
 
         return $response;
     }
 
-    /** One request, in an application of its own while it runs: from the pool, reset by Octane's listeners afterwards. */
+    /**
+     * One request, in an application of its own while it runs: from the pool, reset by Octane's
+     * listeners afterwards. The response is handed over as soon as the kernel made it; terminate()
+     * and the reset follow in the same coroutine, after swerve got the response.
+     */
     private function serve(Request $request, \ArrayObject $context): void
     {
-        $app   = \array_pop($this->idle) ?? $this->boot();
-        $reset = false;
+        $app = \array_pop($this->idle) ?? $this->boot();
         Current::set($app);
+        // Nothing of this request is reused: the application goes; the error is the response unless one was handed over
+        $fail = function (\Throwable $e) use ($app, $context) {
+            $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
+            $app[ExceptionHandler::class]->report($e);
+            Current::unset();
+            $app->flush();
+        };
         try {
             $this->client->bind($app, $context);
-            $kernel    = $app->make(HttpKernel::class);
-            $responded = false;
+            $kernel = $app->make(HttpKernel::class);
+            $request->enableHttpMethodParameterOverride();
+            $app['events']->dispatch(new RequestReceived($app, $app, $request));
+            \ob_start();
+            $response = $kernel->handle($request);
+            $output   = \ob_get_contents();
+            if (\ob_get_level()) {
+                \ob_end_clean();
+            }
+        } catch (\Throwable $e) {
+            $fail($e);
+
+            return;
+        }
+        $after = function () use ($app, $kernel, $request, $response) {
+            $reset = false;
             try {
-                $request->enableHttpMethodParameterOverride();
-                $app['events']->dispatch(new RequestReceived($app, $app, $request));
-                \ob_start();
-                $response = $kernel->handle($request);
-                $output   = \ob_get_contents();
-                if (\ob_get_level()) {
-                    \ob_end_clean();
-                }
-                $this->client->respond($context, $response, $output);
-                $responded = true;
                 $kernel->terminate($request, $response);
                 $app['events']->dispatch(new RequestTerminated($app, $app, $request, $response));
                 $request->route()?->flushController();
@@ -158,21 +183,48 @@ final class Handler implements RequestHandlerInterface
                 }, $app, Container::class)(...$this->booted[$app]);
                 $reset = true;
             } catch (\Throwable $e) {
-                $responded || $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
                 $app[ExceptionHandler::class]->report($e);
+            } finally {
+                Current::unset();
+                if ($reset) {
+                    $this->usedAt[$app] = \microtime(true);
+                    $this->idle[]       = $app;
+                } else {
+                    $app->flush();
+                }
             }
-        } finally {
-            Current::unset();
-            if ($reset) {
-                $this->usedAt[$app] = \microtime(true);
-                $this->idle[]       = $app;
-            } else {
-                $app->flush();
-            }
+        };
+        $streamed = $response instanceof StreamedResponse || $response instanceof BinaryFileResponse;
+        if ($streamed && !$this->virtual && !isset($context['detached'])) {
+            // The callback runs while swerve reads the body: a coroutine of its own
+            $context['detached'] = true;
+            \phasync::go(function () use ($context, $response, $output, $after, $fail) {
+                try {
+                    $this->client->respond($context, $response, $output);
+                } catch (\Throwable $e) {
+                    $fail($e);
+
+                    return;
+                } finally {
+                    $context['done'] = true;
+                    \phasync::raiseFlag($context);
+                }
+                $after();
+            });
+
+            return;
         }
+        try {
+            $this->client->respond($context, $response, $output);
+        } catch (\Throwable $e) {
+            $fail($e);
+
+            return;
+        }
+        // Without a coroutine of its own the request ends once swerve has sent the response
+        isset($context['detached']) || $this->virtual ? $after() : \phasync::finally($after);
     }
 
-    /** Drops the applications that sat unused for $idleSeconds, checked six times in that time. */
     private function startSweeping(): void
     {
         $this->sweeping = true;
