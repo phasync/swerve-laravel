@@ -71,15 +71,16 @@ test('applications are booted as requests overlap, and dropped after sitting unu
     }, workers: 1, env: ['APP_IDLE_SECONDS' => '0.6']);
 });
 
-// Starting leaves one application idle: the one the readiness probe used. A spare is booted when no application is
-// idle while a request is still running, which the probe's quick request is not
+// Starting leaves two applications idle: the one the readiness probe used, and the spare that the probe's taking
+// of the last idle application booted
 test('a request that takes the last idle application leaves a spare booting, so the next request finds one ready', function () {
     with_app(function (string $addr) {
+        \usleep(300_000); // the startup spare is booted
         $boots = fn () => (new Browser($addr))->json('/boots')['boots'];
         $start = $boots();
         overlapping(\array_map(fn () => [new Browser($addr), '/api/wait?ms=300'], [1, 2]));
-        // Two overlapping requests: the second one booted an application, and with the last one taken a spare was booted while they waited
-        expect($boots() - $start)->toBe(2);
+        // Two overlapping requests take the two idle applications: nothing is booted for them, and one spare when the last was taken
+        expect($boots() - $start)->toBe(1);
     }, workers: 1);
 });
 
@@ -89,7 +90,7 @@ test('a burst boots the applications it needs, and one spare', function () {
         $start = $boots();
         overlapping(\array_map(fn () => [new Browser($addr), '/api/wait?ms=300'], \range(1, 6)));
         \usleep(500_000);
-        // Six at once: five more than the one idle, and at most one spare
+        // Six at once: four more than the two idle, and one spare (or two, as the startup spare may still be booting)
         expect($boots() - $start)->toBeGreaterThanOrEqual(5)->toBeLessThanOrEqual(6);
     }, workers: 1);
 });

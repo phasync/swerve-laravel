@@ -1,56 +1,11 @@
 <?php
 
 /*
- * Output a route prints outside the response it returns (echo, print, dd()) has nowhere to go in a
- * worker. Without phasync-ext swerve's guard ends the worker on the first byte of it, and the
- * master starts a new one; with phasync-ext it is harmless: the response is the route's own.
- * The routes are in tests/Fixtures/routes/stray-output.php, which no other test requests.
+ * Swerve's guard ends a worker on output outside a response (docs/stray-output.md in swerve), and has
+ * its own tests; here: with phasync-ext an echo in a route is harmless, and without it the routes
+ * of the skeleton print nothing. The echoing routes are in tests/Fixtures/routes/stray-output.php,
+ * which no other test requests.
  */
-
-/** Where the guard says the output of $needle came from: its file and line in the fixture application. */
-function stray_at(string $needle): string
-{
-    foreach (\file(__DIR__ . '/Fixtures/routes/stray-output.php') as $i => $line) {
-        if (\str_contains($line, $needle)) {
-            return APP . '/routes/stray-output.php:' . ($i + 1);
-        }
-    }
-
-    throw new LogicException("$needle is not in the fixture routes");
-}
-
-test('without phasync-ext a route that echoes ends the worker with the guard message, and the respawned worker serves on', function () {
-    [$proc, $addr, , $err] = app_start(1);
-    try {
-        $pid = (new Browser($addr))->json('/counter')['pid'];
-        expect((new Browser($addr))->get('/echo'))->toMatchArray(['status' => 0, 'body' => '']);
-        eventually(fn () => \str_contains((string) \file_get_contents($err), 'Remedy:'), true);
-        $message = (string) \file_get_contents($err);
-        expect($message)->toStartWith('Stray output is not compatible with swerve.')
-            ->and($message)->toContain('Output:  "echoed " (7 bytes)')
-            ->and($message)->toContain('Request: GET /echo')
-            ->and($message)->toContain('At:      ' . stray_at("echo 'echoed '"))
-            ->and($message)->toContain('Remedy:');
-        // The master started a new worker, which serves
-        eventually(fn () => ((new Browser($addr))->json('/counter')['pid'] ?? $pid) !== $pid, true);
-        expect((new Browser($addr))->json('/counter')['pid'])->not->toBe($pid)
-            ->and((new Browser($addr))->json('/json')['hello'])->toBe('world');
-    } finally {
-        app_stop($proc);
-    }
-})->skip(fn () => ext_loaded(), 'phasync-ext is loaded: output outside a response is harmless');
-
-test('without phasync-ext output before an exception ends the worker too', function () {
-    [$proc, $addr, , $err] = app_start(1);
-    try {
-        expect((new Browser($addr))->get('/echo-throw')['status'])->toBe(0);
-        eventually(fn () => \str_contains((string) \file_get_contents($err), 'Remedy:'), true);
-        expect((string) \file_get_contents($err))->toContain('Request: GET /echo-throw')
-            ->and((string) \file_get_contents($err))->toContain('At:      ' . stray_at("echo 'echoed before failing'"));
-    } finally {
-        app_stop($proc);
-    }
-})->skip(fn () => ext_loaded(), 'phasync-ext is loaded: output outside a response is harmless');
 
 test('with phasync-ext a route that echoes answers with its own response, and no worker dies', function () {
     [$proc, $addr, , $err] = app_start(1);

@@ -62,9 +62,6 @@ final class Handler implements RequestHandlerInterface
     /** @var Pool<Application> the booted applications: idle ones, and the ones requests are using */
     private readonly Pool $pool;
 
-    /** Applications requests hold: the pool's size less this is how many are idle or being booted */
-    private int $busy = 0;
-
     /** @var \WeakMap<Application, array{array, array, array}> what each application's container held when it was booted */
     private \WeakMap $booted;
 
@@ -88,7 +85,7 @@ final class Handler implements RequestHandlerInterface
      *                                while a request uses it; requests beyond that wait for one to
      *                                come free
      */
-    public function __construct(private readonly string $root, private readonly string $basePath = '', float $idleSeconds = 60.0, private readonly int $maxApplications = 128)
+    public function __construct(private readonly string $root, private readonly string $basePath = '', float $idleSeconds = 60.0, int $maxApplications = 128)
     {
         // As under Octane: Laravel then hands a generator stream's callback over as it is, and the client yields its chunks
         $_SERVER['LARAVEL_OCTANE'] = 1;
@@ -178,25 +175,12 @@ final class Handler implements RequestHandlerInterface
     private function take(): Application
     {
         $app = $this->pool->borrow();
-        ++$this->busy;
-        if ($this->noneIdle()) {
-            // After the request got going: warm() boots at once, unless phasync-ext's virtualize() makes it wait. Asked
-            // again then: a burst of requests asks once each, and the pool counts a spare in the making as not idle
-            \phasync::go(function () {
-                \phasync::sleep();
-                $this->noneIdle() && $this->pool->warm();
-            }, context: new \stdClass()); // its own: not the request's, which waits for its coroutines
+        // Every application is lent: none idle, none being made (count() includes both), so one spare at a time
+        if (\count($this->pool) === $this->pool->lent() && !Swerve::draining()) {
+            $this->pool->warm(static fn (\Throwable $e) => Swerve::log()->error('A spare application did not boot: {exception}', ['exception' => $e]));
         }
 
         return $app;
-    }
-
-    /** Every application is in use, and there is room for another: the pool also counts those being booted, which no request holds */
-    private function noneIdle(): bool
-    {
-        $total = \count($this->pool);
-
-        return $total === $this->busy && $total < $this->maxApplications && !Swerve::draining();
     }
 
     /**
@@ -215,7 +199,6 @@ final class Handler implements RequestHandlerInterface
                 $app[ExceptionHandler::class]->report($e);
             } finally {
                 $this->proxied && Current::unset();
-                --$this->busy;
                 $this->pool->discard($app);
             }
         };
@@ -248,7 +231,6 @@ final class Handler implements RequestHandlerInterface
                 $app[ExceptionHandler::class]->report($e);
             } finally {
                 $this->proxied && Current::unset();
-                --$this->busy;
                 if ($reset) {
                     // The context may live on (a WebSocket callback): with a copy of the state, not the array of an application another request takes now
                     $left = \phasync::$contextState;
@@ -291,22 +273,18 @@ final class Handler implements RequestHandlerInterface
     }
 
     /**
-     * A new application for the pool, booted in a coroutine and context of its own, whichever coroutine
-     * needs it: the application's state is its own from the start. Booted as a request would, in a
-     * virtualize() of its own when phasync-ext has one, the response being the empty one of a run that
-     * echoed nothing.
+     * A new application for the pool, booted as a request would be, in a virtualize() of its own when
+     * phasync-ext has one, the response being the empty one of a run that echoed nothing.
      */
     private function create(): Application
     {
-        return \phasync::await(\phasync::go(function () {
-            $boot = function () use (&$app) {
-                $app = $this->boot();
-                $this->proxied && Current::unset();
-            };
-            $this->virtual ? Virtual::run(new ServerRequest('GET', '/', ''), $boot) : $boot();
+        $boot = function () use (&$app) {
+            $app = $this->boot();
+            $this->proxied && Current::unset();
+        };
+        $this->virtual ? Virtual::run(new ServerRequest('GET', '/', ''), $boot) : $boot();
 
-            return $app;
-        }, context: new \stdClass()));
+        return $app;
     }
 
     /**

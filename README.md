@@ -172,11 +172,11 @@ that runs at the same time.
   view while it renders, such as a lazily loaded relation, mixes the output of requests that
   overlap there, unless phasync-ext's `virtualize()` keeps each request's buffers apart.
 - **Output outside the response:** `echo`, `print` and `dump()` in a route are not part of its
-  response. Without phasync-ext they are not supported: PHP's output buffers belong to the
-  process, so a request that waits would hand the output to another. swerve ends the worker
-  (exit status 4) with `Stray output is not compatible with swerve.` and the request, the route's
-  file and line, and the master starts a new one. With phasync-ext the output is dropped. Return a
-  response (`response()`, a view) instead, or serve the application with php-fpm.
+  response, and are handled by swerve for every application: see
+  [stray output](https://github.com/phasync/swerve/blob/main/docs/stray-output.md). With
+  phasync-ext the output is dropped; without it swerve ends the worker. Return a response
+  (`response()`, a view) instead. A stream callback's echoed output is part of its response: it is
+  captured per response, which without phasync-ext serializes callbacks that echo (see Streaming).
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the

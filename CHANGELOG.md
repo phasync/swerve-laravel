@@ -4,7 +4,9 @@
 
 - The applications are a `phasync\Util\Pool`, which replaces the handler's own pool. New fourth
   argument `maxApplications` (128): at most that many exist, requests above it wait. Idle applications are
-  trimmed by the pool, also without traffic; one that failed is flushed and dropped.
+  trimmed by the pool, also without traffic; one that failed is flushed and dropped. A spare is
+  booted by `Pool::warm()` as a request takes the last application that is neither idle nor being
+  booted; its failure is logged. Starting now leaves two applications idle (the readiness probe's, and its spare).
 - Fix: starting on Laravel 12 failed (`Model::$booting` is Laravel 13's).
 - Concurrent by design: a worker serves many requests at once, each in a pooled application of
   its own (it replaces the one-request-at-a-time worker of 0.1.0-alpha2). `docs/concurrency.md`
@@ -25,7 +27,8 @@
   yields to the response: no output buffer, so such streams overlap without phasync-ext and take no turn
   (`LARAVEL_OCTANE` is set, as under Octane, so that Laravel hands the generator over as it is).
   Streams whose callback echoes (and `eventStream()`) are unchanged.
-- Tests: stray output has tests of its own; the skeleton's routes leave the worker's pid unchanged.
+- Tests: the skeleton's routes leave the worker's pid unchanged, and with phasync-ext an echo in a route is
+  harmless; the guard itself is swerve's, with tests there.
 - Depends on the development versions of phasync/phasync and phasync/swerve (`dev-main`) until
   their next tags; install with `minimum-stability` dev and `prefer-stable`.
 - Fix: with context-local state a WebSocket callback kept losing what it set in
