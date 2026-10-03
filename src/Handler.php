@@ -36,8 +36,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * request's coroutine (Current). With phasync-ext's virtualize() each request's output buffers
  * are its own too, which Laravel's view engine needs when a view waits while it renders.
  *
- * Output a route echoes outside its response is not captured: output buffers are the worker's
- * without phasync-ext, and a request that waits would hand its buffer to another.
+ * Output a route prints outside its response (echo, dd()) is not supported without phasync-ext:
+ * swerve ends the worker on it. With phasync-ext it is discarded, and the response stays the route's.
  *
  * When a request takes the last idle application, a spare is booted in the background, so that the
  * next request finds one ready.
@@ -96,8 +96,8 @@ final class Handler implements RequestHandlerInterface
         // Context-local state registered by now: the application's own pointers are per context, nothing is proxied
         $this->proxied = [] === \phasync::$contextStateDefaults;
         $this->proxied && Current::install($app);
-        $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'));
         $this->virtual = Virtual::available();
+        $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'), $this->virtual);
         $this->booted  = new \WeakMap();
         $this->usedAt  = new \WeakMap();
         $this->states  = new \WeakMap();
@@ -134,21 +134,17 @@ final class Handler implements RequestHandlerInterface
         [$laravelRequest, $context] = $this->client->marshalRequest($request);
         $this->sweeping || $this->startSweeping();
         \count($this->idle) > 1 || $this->spare(); // the request takes the last application, or boots one
+        if ($this->virtual) {
+            // The response is what the application hands over, and the request goes on in virtualize()
+            // after that; what it prints is discarded, as the response is not made of it
+            return Virtual::run($context['psr'], function (\Closure $respond) use ($laravelRequest, $context) {
+                $context['respond'] = $respond;
+                $this->serve($laravelRequest, $context);
+            }, handOver: true);
+        }
         $serve = fn () => $this->serve($laravelRequest, $context);
         if (isset($context['detached'])) {
             \phasync::go(function () use ($serve, $context) {
-                try {
-                    $this->virtual ? Virtual::run($context['psr'], $serve) : $serve();
-                } finally {
-                    $context['done'] = true;
-                    \phasync::raiseFlag($context);
-                }
-            });
-        } elseif ($this->virtual) {
-            // Handing over the response releases Virtual::run(), the rest goes on in it; so does output
-            // that the route echoes before it has a response, which the response made later follows
-            $context['virtual'] = true;
-            Virtual::run($context['psr'], function () use ($serve, $context) {
                 try {
                     $serve();
                 } finally {
@@ -156,11 +152,11 @@ final class Handler implements RequestHandlerInterface
                     \phasync::raiseFlag($context);
                 }
             });
+            while (!isset($context['handed']) && !isset($context['done'])) {
+                \phasync::awaitFlag($context);
+            }
         } else {
             $serve();
-        }
-        while ((isset($context['detached']) || isset($context['virtual'])) && !isset($context['handed']) && !isset($context['done'])) {
-            \phasync::awaitFlag($context);
         }
         $response = $context['response'] ?? throw new \RuntimeException('The Laravel application ended without a response');
         // Only swerve holds a streamed body now: dropping it tells the producer the client left

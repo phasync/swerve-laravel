@@ -22,15 +22,18 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * The two sides of the exchange with swerve: turns its PSR-7 requests into Laravel requests, and
  * Laravel's responses into PSR-7 responses handed to the waiting Handler::handle().
  *
- * A request's state is an ArrayObject, its "context": 'psr' is swerve's request, and 'handed',
- * 'response', 'returned' and 'upgrade' tell Handler::handle() and the coroutine running Laravel
- * where they are.
+ * A request's state is an ArrayObject, its "context": 'psr' is swerve's request, 'respond' hands
+ * a response to Virtual::run(), and 'handed', 'response', 'returned' and 'upgrade' tell
+ * Handler::handle() and the coroutine running Laravel where they are.
  *
  * @internal
  */
 final class Client
 {
-    public function __construct(private readonly string $public, private readonly string $basePath = '')
+    /**
+     * @param bool $virtual each request runs in phasync-ext's virtualize(), by Virtual::run() handing over its response
+     */
+    public function __construct(private readonly string $public, private readonly string $basePath = '', private readonly bool $virtual = false)
     {
     }
 
@@ -181,7 +184,7 @@ final class Client
                 $pipe->end();
             }
         };
-        isset($context['virtual']) ? $send() : Synchronized::run($this, $send);
+        $this->virtual ? $send() : Synchronized::run($this, $send);
     }
 
     /** A 500 for an exception the HTTP kernel did not turn into a response. */
@@ -191,23 +194,25 @@ final class Client
     }
 
     /**
-     * Give swerve the response. A request with a coroutine of its own waits until Handler::handle()
-     * returned it; one running in Virtual::run() releases that with its first output (its own, or a stray echo's). Otherwise handle()
-     * returns it as soon as the application is done.
+     * Give swerve the response. Under Virtual::run() that is its $respond closure, and the request goes on
+     * running. Otherwise a request with a coroutine of its own waits until Handler::handle() returned it,
+     * and handle() returns it as soon as the application is done.
      */
     private function hand(\ArrayObject $context, ResponseInterface $response): void
     {
         if (!isset($context['handed'])) { // not again for an error after a streamed response began
-            $context['handed']   = true;
+            $context['handed'] = true;
+            if ($this->virtual) {
+                $context['respond']($response);
+
+                return;
+            }
             $context['response'] = $response;
             if (isset($context['detached'])) {
                 \phasync::raiseFlag($context);
                 while (!isset($context['returned'])) {
                     \phasync::awaitFlag($context);
                 }
-            } elseif (isset($context['virtual'])) {
-                echo ' '; // the first output sends Virtual::run() the headers it returns on; the body is not used
-                \phasync::raiseFlag($context); // handle() may be waiting: Virtual::run() returned at a stray echo
             }
         }
     }
