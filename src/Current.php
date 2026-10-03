@@ -31,6 +31,9 @@ final class Current
 {
     private static ?Application $proxy = null;
 
+    /** The view factory Blade components use: forwards to the current application's */
+    private static ?object $factory = null;
+
     /** @var \ArrayAccess|null Facade::$resolvedInstance, in each request's own */
     private static ?\ArrayAccess $resolved = null;
 
@@ -172,12 +175,7 @@ final class Current
         // application
         self::forwardCallbacks($app);
         $app['view']->addNamespace('__components', $app['config']->get('view.compiled'));
-        \Closure::bind(static fn () => Component::$factory = new class {
-            public function __call($method, $args)
-            {
-                return Current::app()['view']->$method(...$args);
-            }
-        }, null, Component::class)();
+        self::componentFactory();
 
         return $proxy;
     }
@@ -220,6 +218,22 @@ final class Current
                 $this->own[$context] = $own;
             }
         };
+    }
+
+    /**
+     * Point Blade components at the proxy of the view factory. The view provider's terminating callback
+     * forgets Component's factory after each request, so that the next request that renders a component
+     * would keep its own application's: this puts the proxy back.
+     */
+    public static function componentFactory(): void
+    {
+        $factory = self::$factory ??= new class {
+            public function __call($method, $args)
+            {
+                return Current::app()['view']->$method(...$args);
+            }
+        };
+        \Closure::bind(static fn () => Component::$factory = $factory, null, Component::class)();
     }
 
     /**

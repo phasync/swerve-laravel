@@ -199,6 +199,7 @@ final class Handler implements RequestHandlerInterface
             $reset = false;
             try {
                 $kernel->terminate($request, $response);
+                $this->proxied && Current::componentFactory();
                 $app['events']->dispatch(new RequestTerminated($app, $app, $request, $response));
                 $request->route()?->flushController();
                 // What the request resolved or registered goes, as when Octane drops its sandbox; the
