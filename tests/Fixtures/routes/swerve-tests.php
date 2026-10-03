@@ -143,6 +143,13 @@ Route::get('/stream-id/{id}', fn (string $id) => response()->stream(function () 
         swerve_test_wait(0.1);
     }
 }));
+// A generator stream: it yields its chunks and echoes nothing
+Route::get('/gen-id/{id}', fn (string $id) => response()->stream(function () use ($id) {
+    for ($i = 1; $i <= 6; ++$i) {
+        yield "$id$i ";
+        swerve_test_wait(0.1);
+    }
+}));
 Route::get('/sse', fn () => response()->eventStream(function () {
     for ($i = 1; $i <= 3; ++$i) {
         yield "tick $i";
@@ -153,6 +160,16 @@ Route::get('/forever', fn () => response()->stream(function () {
     try {
         while (true) {
             echo \str_repeat('x', 1000) . "\n";
+            swerve_test_wait(0.05);
+        }
+    } finally {
+        \file_put_contents(storage_path('forever-ended'), \getmypid());
+    }
+}));
+Route::get('/forever-gen', fn () => response()->stream(function () {
+    try {
+        while (true) {
+            yield \str_repeat('x', 1000) . "\n";
             swerve_test_wait(0.05);
         }
     } finally {

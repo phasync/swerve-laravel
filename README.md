@@ -178,9 +178,11 @@ that runs at the same time.
   callback where it next waits: its `finally` blocks run, but the application is dropped
   instead of reset, and `terminate()` callbacks do not run for that request. Without
   phasync-ext a stream callback's output is collected in a buffer that belongs to the process, so
-  stream callbacks run one at a time in a worker, the others waiting their turn (a stream that
-  never ends holds the turn; other requests are not held up), and `usleep()` in one holds the
-  whole worker. With phasync-ext streams overlap properly.
+  stream callbacks that `echo` run one at a time in a worker, the others waiting their turn (a
+  stream that never ends holds the turn; other requests are not held up), and `usleep()` in one
+  holds the whole worker. A callback that `yield`s its chunks (`response()->stream(function () {
+  yield ...; })`) needs no buffer and overlaps with or without phasync-ext, as do all streams with
+  it.
 - **WebSockets:** see [WebSockets](#websockets). The connection is swerve's; only the
   handshake is a Laravel request.
 

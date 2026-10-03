@@ -90,6 +90,8 @@ final class Handler implements RequestHandlerInterface
      */
     public function __construct(private readonly string $root, private readonly string $basePath = '', private readonly float $idleSeconds = 60.0)
     {
+        // As under Octane: Laravel then hands a generator stream's callback over as it is, and the client yields its chunks
+        $_SERVER['LARAVEL_OCTANE'] = 1;
         // The first application only learns the application's class and warms opcache
         $app = require "$root/bootstrap/app.php";
         $app->make(ConsoleKernel::class)->bootstrap();

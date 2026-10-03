@@ -38,3 +38,17 @@ test('overlapping streams all complete, and a request that is not a stream is no
         }
     }, workers: 1);
 });
+
+test('generator streams overlap, with or without phasync-ext, each client getting its own chunks', function () {
+    with_app(function (string $addr) {
+        $ids       = ['a', 'b', 'c'];
+        $start     = \microtime(true);
+        $responses = overlapping(\array_map(fn ($id) => [new Browser($addr), "/gen-id/$id"], $ids));
+        $took      = \microtime(true) - $start;
+        foreach ($ids as $i => $id) {
+            expect($responses[$i]['body'])->toBe(\implode('', \array_map(fn ($n) => "$id$n ", \range(1, 6))));
+        }
+        // Three streams of 0.6 s one after the other would take 1.8 s
+        expect($took)->toBeLessThan(1.2);
+    }, workers: 1);
+});

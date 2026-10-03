@@ -150,6 +150,25 @@ final class Client
             {
             }
         };
+        // A generator callback (Laravel hands it over as it is when LARAVEL_OCTANE is set) yields its
+        // chunks: they go to the pipe with no output buffer, so streams overlap with or without phasync-ext
+        $callback = $response instanceof StreamedResponse ? $response->getCallback() : null;
+        if ($callback instanceof \Closure && (new \ReflectionFunction($callback))->isGenerator()) {
+            try {
+                foreach ($callback() as $chunk) {
+                    if ('' !== ($chunk = (string) $chunk) && !$pipe->write($chunk)) {
+                        break; // the client left; the generator's finally blocks run as it is released
+                    }
+                }
+            } catch (\Throwable $e) {
+                $pipe->failed = true; // the client sees the response cut off, not complete
+                throw $e;
+            } finally {
+                $pipe->end();
+            }
+
+            return;
+        }
         // Without phasync-ext output buffers are the worker's: the buffers of streams that overlap
         // would stack, and an echo reach the one that started last. One at a time then; the others wait
         $send = function () use ($response, $pipe, $fiber, $gone) {

@@ -14,6 +14,10 @@
   echoed and then waited now answers with its response.
 - The response of a request that runs virtualized (phasync-ext) is handed over with
   `Virtual::run(..., handOver: true)`; the `echo ' '` and flag workaround is gone.
+- A `response()->stream()` callback that is a generator is read by the handler, which writes the chunks it
+  yields to the response: no output buffer, so such streams overlap without phasync-ext and take no turn
+  (`LARAVEL_OCTANE` is set, as under Octane, so that Laravel hands the generator over as it is).
+  Streams whose callback echoes (and `eventStream()`) are unchanged.
 - Tests: stray output has tests of its own; the skeleton's routes leave the worker's pid unchanged.
 - Depends on the development versions of phasync/phasync and phasync/swerve (`dev-main`) until
   their next tags; install with `minimum-stability` dev and `prefer-stable`.

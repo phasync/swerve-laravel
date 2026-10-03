@@ -146,11 +146,11 @@ test('streaming: a streamed response and Server-Sent Events arrive as they are p
     });
 });
 
-test('streaming: a client leaving ends an endless stream, and the worker serves on', function () {
+test('streaming: a client leaving ends an endless stream, and the worker serves on', function (string $path) {
     \is_file(APP . '/storage/forever-ended') && \unlink(APP . '/storage/forever-ended');
-    $log = with_app(function (string $addr) {
+    $log = with_app(function (string $addr) use ($path) {
         $conn = \stream_socket_client("tcp://$addr");
-        \fwrite($conn, "GET /forever HTTP/1.1\r\nHost: test\r\n\r\n");
+        \fwrite($conn, "GET $path HTTP/1.1\r\nHost: test\r\n\r\n");
         expect(\fread($conn, 8192))->toStartWith('HTTP/1.1 200');
         \usleep(200_000);
         \fclose($conn);
@@ -162,7 +162,7 @@ test('streaming: a client leaving ends an endless stream, and the worker serves 
             ->and((new Browser($addr))->json('/json'))->toMatchArray(['hello' => 'world']);
     }, workers: 1);
     expect($log)->not->toMatch('/error|exception/i');
-});
+})->with(['an echoing callback' => '/forever', 'a generator' => '/forever-gen']);
 
 test('file responses, with ranges', function () {
     with_app(function (string $addr) {
