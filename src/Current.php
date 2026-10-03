@@ -14,6 +14,7 @@ use Illuminate\Pagination\PaginationState;
 use Illuminate\Queue\Queue;
 use Illuminate\Support\Facades\Facade;
 use Illuminate\View\Component;
+use Laravel\Octane\Listeners\GiveNewRequestInstanceToPaginator;
 
 /**
  * The Laravel application of the request running in the current coroutine.
@@ -156,6 +157,12 @@ final class Current
             }
         });
         PaginationState::resolveUsing($proxy);
+        // Octane's listener points the paginator at the application of the request that last started
+        $app->instance(GiveNewRequestInstanceToPaginator::class, new class {
+            public function handle(): void
+            {
+            }
+        });
         // Carbon's locale is process-wide: each request's own, in its context
         if (!Carbon::getTranslator() instanceof CarbonTranslator) {
             Carbon::setTranslator(new CarbonTranslator(Carbon::getLocale()));
