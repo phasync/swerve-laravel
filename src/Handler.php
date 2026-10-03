@@ -2,7 +2,6 @@
 
 namespace Swerve\Laravel;
 
-use Illuminate\Container\Container;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
@@ -56,7 +55,7 @@ final class Handler implements RequestHandlerInterface
 
     private bool $sweeping = false;
 
-    /** @var \WeakMap<Application, array{array, array}> what each application's container held when it was booted */
+    /** @var \WeakMap<Application, array{array, array, array}> what each application's container held when it was booted */
     private \WeakMap $booted;
 
     /** Each request runs in phasync-ext's virtualize(): its output buffers are its own */
@@ -200,19 +199,20 @@ final class Handler implements RequestHandlerInterface
                 $request->route()?->flushController();
                 // What the request resolved or registered goes, as when Octane drops its sandbox; the
                 // objects the application booted with stay, and so does the state they reset themselves
-                \Closure::bind(function (array $instances, array $rebound) {
-                    $this->instances        = $instances;
-                    $this->reboundCallbacks = $rebound;
-                }, $app, Container::class)(...$this->booted[$app]);
+                \Closure::bind(function (array $instances, array $rebound, array $terminating) {
+                    $this->instances            = $instances;
+                    $this->reboundCallbacks     = $rebound;
+                    $this->terminatingCallbacks = $terminating;
+                }, $app, Application::class)(...$this->booted[$app]);
                 $reset = true;
             } catch (\Throwable $e) {
                 $app[ExceptionHandler::class]->report($e);
             } finally {
                 $this->contextState || Current::unset();
                 if ($reset) {
-                    // The context may live on (a WebSocket callback): not with the state of an application another request takes now
+                    // The context may live on (a WebSocket callback): with a copy of the state, not the array of an application another request takes now
                     if ($this->contextState) {
-                        $left = \phasync::$contextStateDefaults;
+                        $left = \phasync::$contextState;
                         \phasync::adoptContextState($left);
                     }
                     $this->usedAt[$app] = \microtime(true);
@@ -328,7 +328,7 @@ final class Handler implements RequestHandlerInterface
                 $app->make($service);
             }
         }
-        $this->booted[$app] = \Closure::bind(fn () => [$this->instances, $this->reboundCallbacks], $app, Container::class)();
+        $this->booted[$app] = \Closure::bind(fn () => [$this->instances, $this->reboundCallbacks, $this->terminatingCallbacks], $app, Application::class)();
         if ($state) {
             $state->sync(); // classes other applications declared while this one booted
             $this->states[$app] = $state;

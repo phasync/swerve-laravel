@@ -4,6 +4,7 @@
 
 use App\Models\User;
 use Illuminate\Auth\GenericUser;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\App;
@@ -399,4 +400,22 @@ Route::get('/state/ws', function (ServerRequestInterface $request) {
             ]));
         }
     });
+});
+// The callback sets its own value at its start, waits, and reads it back; the request it came from is over by then
+Route::get('/state/ws-keep/{id}', function (ServerRequestInterface $request, string $id) {
+    return WebSocket::from($request, function (WebSocket $ws) use ($id) {
+        phasync::$contextState['conn'] = $id;
+        foreach ($ws as $message) {
+            swerve_test_wait(0.1);
+            $ws->send(phasync::$contextState['conn'] ?? 'none');
+        }
+    });
+});
+
+// A terminating callback registered while the request runs: it appends its tag to storage/terminated.log
+Route::get('/terminating/{tag}', function (Request $request, Application $app, string $tag) {
+    $app->terminating(fn () => \file_put_contents(storage_path('terminated.log'), "$tag\n", \FILE_APPEND | \LOCK_EX));
+    swerve_test_wait((float) $request->query('wait', 0));
+
+    return $tag;
 });

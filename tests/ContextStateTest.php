@@ -72,16 +72,38 @@ test('an idle application takes the slots of classes declared after its state wa
     }, workers: 1, env: STATE);
 });
 
-test('a WebSocket callback runs outside the state of the application that upgraded it; Handler::run() has a state of its own', function () {
+test('a WebSocket callback keeps the state its request left it, whatever the application serves meanwhile; Handler::run() has a state of its own', function () {
     $log = with_app(function (string $addr) {
         $ws = ws_connect($addr, '/state/ws');
         foreach ([1, 2] as $i) {
             ws_send($ws, 'hi');
             [$opcode, $payload] = ws_read($ws);
-            // The marker the request set is the application's, and Handler::run() starts every time from a new application's state
-            expect(\json_decode($payload, true))->toBe(['callback' => null, 'run' => [null, 1]]);
+            // The marker the request set is the callback's too, and Handler::run() starts every time from a new application's state
+            expect(\json_decode($payload, true))->toBe(['callback' => 'request', 'run' => [null, 1]]);
         }
         \fclose($ws);
+    }, workers: 1, env: STATE);
+    expect($log)->not->toMatch('/error|exception/i');
+});
+
+test('a WebSocket callback reads back what it set at its start, while other requests use the pool', function () {
+    $log = with_app(function (string $addr) {
+        $ids   = \range(1, 6);
+        $conns = [];
+        foreach ($ids as $id) {
+            $conns[$id] = ws_connect($addr, "/state/ws-keep/$id");
+            expect((new Browser($addr))->json("/state/bleed/other$id")['x'])->toBe("other$id");
+        }
+        foreach ($conns as $conn) {
+            ws_send($conn, 'hi');
+        }
+        // Requests that write their own values while the callbacks wait
+        $meanwhile = overlapping(\array_map(fn ($i) => [new Browser($addr), "/state/bleed/m$i?wait=0.2"], \range(1, 4)));
+        expect(\array_map(fn ($r) => \json_decode($r['body'], true)['x'], $meanwhile))->toBe(['m1', 'm2', 'm3', 'm4']);
+        foreach ($conns as $id => $conn) {
+            expect(ws_read($conn))->toBe([1, (string) $id]);
+            \fclose($conn);
+        }
     }, workers: 1, env: STATE);
     expect($log)->not->toMatch('/error|exception/i');
 });

@@ -94,3 +94,31 @@ test('a burst boots the applications it needs, and one spare', function () {
         expect($boots() - $start)->toBeGreaterThanOrEqual(4)->toBeLessThanOrEqual(5);
     }, workers: 1);
 });
+
+test('a terminating callback registered by a request runs for that request only, however long the application is pooled', function () {
+    foreach ([[], ['APP_CONTEXT_STATE' => '1']] as $env) {
+        $file = APP . '/storage/terminated.log';
+        \is_file($file) && \unlink($file);
+        with_app(function (string $addr) use ($file) {
+            $tags = \array_map(fn ($i) => "s$i", \range(1, 12));
+            foreach ($tags as $tag) {
+                expect((new Browser($addr))->get("/terminating/$tag")['body'])->toBe($tag);
+            }
+            $overlapping = \array_map(fn ($i) => "o$i", \range(1, 12));
+            overlapping(\array_map(fn ($tag) => [new Browser($addr), "/terminating/$tag?wait=0.2"], $overlapping));
+            // Once more per application, so that every one is reset and reused after the overlapping requests
+            foreach ($tags as $i => $tag) {
+                (new Browser($addr))->get("/terminating/t$i");
+            }
+            $want = \array_merge($tags, $overlapping, \array_map(fn ($i) => "t$i", \array_keys($tags)));
+            \sort($want);
+            $got = fn () => \is_file($file) ? \explode("\n", \trim(\file_get_contents($file))) : [];
+            expect(eventually(fn () => \count($got()), \count($want)))->toBe(\count($want));
+            \usleep(300_000);
+            $lines = $got();
+            \sort($lines);
+            expect($lines)->toBe($want);
+        }, workers: 1, env: $env);
+        \unlink($file);
+    }
+});
