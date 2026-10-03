@@ -4,6 +4,11 @@
 
 - Tests: every static property of Laravel 13 and the classes it runs on is classified in `tests/statics/allowlist.php`, and
   `tests/StaticsTest.php` fails on one that is not (a new release added it) and on a row that has no property any more.
+- Fix: output a route echoes outside its response (`echo`, `dump()`) is no longer captured around the
+  kernel and put before the response's content: without phasync-ext output buffers are the worker's, so
+  a request that waited handed its buffer to another. It goes to the worker's stdout; with phasync-ext
+  it is dropped. A route that echoed and then waited made the request fail with phasync-ext
+  ("ended without a response"); it now answers with its response.
 - Fix: with context-local state a WebSocket callback kept losing what it set in
   `phasync::$contextState`: the request's end gave its context the defaults. It now keeps a copy
   of what it had (#3).

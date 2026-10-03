@@ -165,6 +165,14 @@ Route::get('/echo-throw', function () {
 
     throw new RuntimeException('failed after echo');
 });
+// Output echoed around a wait, before the response exists
+Route::get('/echo-wait/{tag}', function (string $tag) {
+    echo "$tag-";
+    swerve_test_wait(0.1);
+    echo $tag;
+
+    return response()->json(['tag' => $tag]);
+});
 Route::get('/defer', function () {
     defer(function () {
         \usleep(700_000);

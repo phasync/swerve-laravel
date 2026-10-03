@@ -112,8 +112,8 @@ final class Client
         return [Request::createFromBase(new SymfonyRequest($psr->getQueryParams(), $post, [], $psr->getCookieParams(), $files, $server, $content)), $context];
     }
 
-    /** Hand $response to swerve: what the request echoed ($output) goes before its content. */
-    public function respond(\ArrayObject $context, SymfonyResponse $response, string $output): void
+    /** Hand $response to swerve. */
+    public function respond(\ArrayObject $context, SymfonyResponse $response): void
     {
         $status   = $response->getStatusCode();
         if (101 === $status && isset($context['upgrade'])) {
@@ -125,12 +125,8 @@ final class Client
         foreach ($response->headers->getCookies() as $cookie) {
             $headers['Set-Cookie'][] = (string) $cookie;
         }
-        // What the request echoed goes first, as under PHP-FPM; not before a file
-        if ($response instanceof BinaryFileResponse) {
-            $output = '';
-        }
         if (!$response instanceof StreamedResponse && !$response instanceof BinaryFileResponse) {
-            $this->hand($context, new Response($status, $headers, $output . $response->getContent()));
+            $this->hand($context, new Response($status, $headers, $response->getContent()));
 
             return;
         }
@@ -167,7 +163,6 @@ final class Client
             return '';
         }, 1);
         try {
-            '' !== $output && $pipe->write($output);
             $response->sendContent();
         } catch (\Throwable $e) {
             if ($e !== $gone) {
@@ -191,7 +186,7 @@ final class Client
 
     /**
      * Give swerve the response. A request with a coroutine of its own waits until Handler::handle()
-     * returned it; one running in Virtual::run() releases that with its first output. Otherwise handle()
+     * returned it; one running in Virtual::run() releases that with its first output (its own, or a stray echo's). Otherwise handle()
      * returns it as soon as the application is done.
      */
     private function hand(\ArrayObject $context, ResponseInterface $response): void
@@ -206,6 +201,7 @@ final class Client
                 }
             } elseif (isset($context['virtual'])) {
                 echo ' '; // the first output sends Virtual::run() the headers it returns on; the body is not used
+                \phasync::raiseFlag($context); // handle() may be waiting: Virtual::run() returned at a stray echo
             }
         }
     }

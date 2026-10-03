@@ -167,6 +167,10 @@ that runs at the same time.
   `@component` and `@push`), and PHP's output buffers belong to the process. A wait inside a
   view while it renders, such as a lazily loaded relation, mixes the output of requests that
   overlap there, unless phasync-ext's `virtualize()` keeps each request's buffers apart.
+- **Output outside the response:** what a route `echo`es or `dump()`s is not part of its response,
+  as the handler no longer buffers it: a buffer is the worker's without phasync-ext, and a request
+  that waits would hand it to another. Without phasync-ext it goes to the worker's stdout; with it,
+  nowhere a client sees. Return a response (`response()`, a view) instead.
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the

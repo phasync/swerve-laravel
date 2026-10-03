@@ -36,6 +36,9 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * request's coroutine (Current). With phasync-ext's virtualize() each request's output buffers
  * are its own too, which Laravel's view engine needs when a view waits while it renders.
  *
+ * Output a route echoes outside its response is not captured: output buffers are the worker's
+ * without phasync-ext, and a request that waits would hand its buffer to another.
+ *
  * When a request takes the last idle application, a spare is booted in the background, so that the
  * next request finds one ready.
  *
@@ -142,12 +145,21 @@ final class Handler implements RequestHandlerInterface
                 }
             });
         } elseif ($this->virtual) {
-            $context['virtual'] = true; // handing over the response releases Virtual::run(), the rest goes on in it
-            Virtual::run($context['psr'], $serve);
+            // Handing over the response releases Virtual::run(), the rest goes on in it; so does output
+            // that the route echoes before it has a response, which the response made later follows
+            $context['virtual'] = true;
+            Virtual::run($context['psr'], function () use ($serve, $context) {
+                try {
+                    $serve();
+                } finally {
+                    $context['done'] = true;
+                    \phasync::raiseFlag($context);
+                }
+            });
         } else {
             $serve();
         }
-        while (isset($context['detached']) && !isset($context['handed']) && !isset($context['done'])) {
+        while ((isset($context['detached']) || isset($context['virtual'])) && !isset($context['handed']) && !isset($context['done'])) {
             \phasync::awaitFlag($context);
         }
         $response = $context['response'] ?? throw new \RuntimeException('The Laravel application ended without a response');
@@ -187,12 +199,7 @@ final class Handler implements RequestHandlerInterface
             $kernel = $app->make(HttpKernel::class);
             $request->enableHttpMethodParameterOverride();
             $app['events']->dispatch(new RequestReceived($app, $app, $request));
-            \ob_start();
             $response = $kernel->handle($request);
-            $output   = \ob_get_contents();
-            if (\ob_get_level()) {
-                \ob_end_clean();
-            }
         } catch (\Throwable $e) {
             $fail($e);
 
@@ -231,9 +238,9 @@ final class Handler implements RequestHandlerInterface
         if ($streamed && !$this->virtual && !isset($context['detached'])) {
             // The callback runs while swerve reads the body: a coroutine of its own
             $context['detached'] = true;
-            \phasync::go(function () use ($context, $response, $output, $after, $fail) {
+            \phasync::go(function () use ($context, $response, $after, $fail) {
                 try {
-                    $this->client->respond($context, $response, $output);
+                    $this->client->respond($context, $response);
                 } catch (\Throwable $e) {
                     $fail($e);
 
@@ -248,7 +255,7 @@ final class Handler implements RequestHandlerInterface
             return;
         }
         try {
-            $this->client->respond($context, $response, $output);
+            $this->client->respond($context, $response);
         } catch (\Throwable $e) {
             $fail($e);
 
