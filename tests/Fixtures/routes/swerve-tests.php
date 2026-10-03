@@ -136,6 +136,13 @@ Route::get('/stream', fn () => response()->stream(function () {
     swerve_test_wait(0.5);
     echo 'last ' . \microtime(true) . "\n";
 }));
+// A stream that tags every chunk it echoes with its id, waiting between chunks
+Route::get('/stream-id/{id}', fn (string $id) => response()->stream(function () use ($id) {
+    for ($i = 1; $i <= 6; ++$i) {
+        echo "$id$i ";
+        swerve_test_wait(0.1);
+    }
+}));
 Route::get('/sse', fn () => response()->eventStream(function () {
     for ($i = 1; $i <= 3; ++$i) {
         yield "tick $i";
