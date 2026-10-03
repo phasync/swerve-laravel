@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fix: with `contextState: true` a WebSocket callback kept losing what it set in
+  `phasync::$contextState`: the request's end gave its context the defaults. It now keeps a copy
+  of what it had (#3).
+- Fix: `terminating()` callbacks registered while a request runs no longer pile up in the pooled
+  application; the reset restores them to their post-boot list, as Octane's sandbox does (#4).
+- Docs: streamed responses without phasync-ext, and a client that leaves mid-stream (#5).
 - A worker always has an application ready: when a request takes the last idle one, a spare
   boots in the background (one at a time, not while the worker drains).
 - `new Handler($root, contextState: true)`: each pooled application has a `phasync::$contextState`

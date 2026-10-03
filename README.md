@@ -141,7 +141,8 @@ that runs at the same time.
   application a `phasync::$contextState` array of its own (phasync 2.0.0-beta5 or later). A request
   runs with the array of the application it takes, so static properties that are context-local
   state belong to the application, as its instance properties do. Laravel's pointers to the
-  application are then the application's own, and the reset above applies on top.
+  application are then the application's own, and the reset above applies on top. A WebSocket
+  callback keeps a copy of the state its request left it.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
   fields, JSON, and uploads, which stay swerve's temporary files (no copy; deleted after the
   request unless moved). Octane's `RequestReceived` listeners reset the application (session,
@@ -167,7 +168,11 @@ that runs at the same time.
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
-  callback where it next waits.
+  callback where it next waits: its `finally` blocks run, but the application is dropped
+  instead of reset, and `terminate()` callbacks do not run for that request. Without
+  phasync-ext PHP's output buffers are process-wide: a stream callback that waits lets other
+  requests run, but concurrent streams mix their output, and `usleep()` in one holds the
+  whole worker. With phasync-ext streams overlap properly.
 - **WebSockets:** see [WebSockets](#websockets). The connection is swerve's; only the
   handshake is a Laravel request.
 
