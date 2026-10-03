@@ -9,6 +9,7 @@ use Illuminate\Routing\Events\PreparingResponse;
 use phasync\CancelledException;
 use phasync\Psr\Response;
 use phasync\Psr\StringStream;
+use phasync\Util\Synchronized;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Message\UploadedFileInterface;
@@ -146,36 +147,41 @@ final class Client
             {
             }
         };
-        $streaming = true;  // the callback runs: it may be cancelled
-        $cancelled = false;
-        $level     = \ob_get_level();
-        \ob_start(static function (string $chunk) use ($pipe, $fiber, $gone, &$streaming, &$cancelled): string {
-            // An output handler must not throw: the client having left, the callback is
-            // cancelled where it next waits (sleep(), a query, ...), not here
-            if ('' !== $chunk && !$pipe->write($chunk) && !$cancelled) {
-                $cancelled = true;
-                \phasync::go(static function () use ($fiber, $gone, &$streaming) {
-                    \phasync::sleep(); // until the callback waits
-                    $streaming && $fiber->isSuspended() && \phasync::cancel($fiber, $gone);
-                });
-            }
+        // Without phasync-ext output buffers are the worker's: the buffers of streams that overlap
+        // would stack, and an echo reach the one that started last. One at a time then; the others wait
+        $send = function () use ($response, $pipe, $fiber, $gone) {
+            $streaming = true;  // the callback runs: it may be cancelled
+            $cancelled = false;
+            $level     = \ob_get_level();
+            \ob_start(static function (string $chunk) use ($pipe, $fiber, $gone, &$streaming, &$cancelled): string {
+                // An output handler must not throw: the client having left, the callback is
+                // cancelled where it next waits (sleep(), a query, ...), not here
+                if ('' !== $chunk && !$pipe->write($chunk) && !$cancelled) {
+                    $cancelled = true;
+                    \phasync::go(static function () use ($fiber, $gone, &$streaming) {
+                        \phasync::sleep(); // until the callback waits
+                        $streaming && $fiber->isSuspended() && \phasync::cancel($fiber, $gone);
+                    });
+                }
 
-            return '';
-        }, 1);
-        try {
-            $response->sendContent();
-        } catch (\Throwable $e) {
-            if ($e !== $gone) {
-                $pipe->failed = true; // the client sees the response cut off, not complete
-                throw $e;
+                return '';
+            }, 1);
+            try {
+                $response->sendContent();
+            } catch (\Throwable $e) {
+                if ($e !== $gone) {
+                    $pipe->failed = true; // the client sees the response cut off, not complete
+                    throw $e;
+                }
+            } finally {
+                $streaming = false;
+                while (\ob_get_level() > $level) {
+                    \ob_end_clean();
+                }
+                $pipe->end();
             }
-        } finally {
-            $streaming = false;
-            while (\ob_get_level() > $level) {
-                \ob_end_clean();
-            }
-            $pipe->end();
-        }
+        };
+        isset($context['virtual']) ? $send() : Synchronized::run($this, $send);
     }
 
     /** A 500 for an exception the HTTP kernel did not turn into a response. */

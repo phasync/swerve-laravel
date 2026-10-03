@@ -176,9 +176,10 @@ that runs at the same time.
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
   callback where it next waits: its `finally` blocks run, but the application is dropped
   instead of reset, and `terminate()` callbacks do not run for that request. Without
-  phasync-ext PHP's output buffers are process-wide: a stream callback that waits lets other
-  requests run, but concurrent streams mix their output, and `usleep()` in one holds the
-  whole worker. With phasync-ext streams overlap properly.
+  phasync-ext PHP's output buffers are process-wide: stream callbacks run one at a time in a
+  worker, the others waiting their turn (a stream that never ends holds the turn; other requests
+  are not held up), and `usleep()` in one holds the whole worker. With phasync-ext streams overlap
+  properly.
 - **WebSockets:** see [WebSockets](#websockets). The connection is swerve's; only the
   handshake is a Laravel request.
 

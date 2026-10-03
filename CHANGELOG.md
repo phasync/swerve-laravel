@@ -4,6 +4,9 @@
 
 - Tests: every static property of Laravel 13 and the classes it runs on is classified in `tests/statics/allowlist.php`, and
   `tests/StaticsTest.php` fails on one that is not (a new release added it) and on a row that has no property any more.
+- Fix: without phasync-ext concurrent streams mixed their output (the callbacks' output buffers stack
+  in the worker, so an echo reached the stream that started last). Stream callbacks now run one at a
+  time per worker, the others waiting their turn; with phasync-ext they overlap as before (#5).
 - Fix: output a route echoes outside its response (`echo`, `dump()`) is no longer captured around the
   kernel and put before the response's content: without phasync-ext output buffers are the worker's, so
   a request that waited handed its buffer to another. It goes to the worker's stdout; with phasync-ext
