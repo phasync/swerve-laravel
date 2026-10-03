@@ -30,6 +30,9 @@ final class Current
 {
     private static ?Application $proxy = null;
 
+    /** @var \ArrayAccess|null Facade::$resolvedInstance, in each request's own */
+    private static ?\ArrayAccess $resolved = null;
+
     /** @var \WeakMap<object, Application>|null the application of each request's context */
     private static ?\WeakMap $apps = null;
 
@@ -75,10 +78,11 @@ final class Current
     {
         $proxy = self::$proxy ??= self::makeProxy($app::class);
         Container::setInstance($proxy);
-        \Closure::bind(static function () use ($proxy) {
+        $resolved = self::$resolved ??= self::resolvedInstances();
+        \Closure::bind(static function () use ($proxy, $resolved) {
             Facade::$app              = $proxy;
             Facade::$cached           = false; // a facade's instance is the current application's
-            Facade::$resolvedInstance = [];
+            Facade::$resolvedInstance = $resolved;
         }, null, Facade::class)();
         \Closure::bind(static fn () => HandleExceptions::$app = $proxy, null, HandleExceptions::class)();
         // A model whose boot threw (Eloquent used outside a request) stays "being booted" for the
@@ -169,6 +173,46 @@ final class Current
         }, null, Component::class)();
 
         return $proxy;
+    }
+
+    /** Facade::$resolvedInstance holds what Facade::swap() stores (every fake()): each request has its own. */
+    private static function resolvedInstances(): \ArrayAccess
+    {
+        return new class implements \ArrayAccess {
+            /** @var \WeakMap<object, array> what Facade::swap() (every fake()) stored, by request: a fake is the request's own */
+            private \WeakMap $own;
+
+            public function __construct()
+            {
+                $this->own = new \WeakMap();
+            }
+
+            public function offsetExists(mixed $offset): bool
+            {
+                return isset($this->own[Current::context() ?? $this][$offset]);
+            }
+
+            public function offsetGet(mixed $offset): mixed
+            {
+                return $this->own[Current::context() ?? $this][$offset];
+            }
+
+            public function offsetSet(mixed $offset, mixed $value): void
+            {
+                $context              = Current::context() ?? $this;
+                $own                  = $this->own[$context] ?? [];
+                $own[$offset]         = $value;
+                $this->own[$context]  = $own;
+            }
+
+            public function offsetUnset(mixed $offset): void
+            {
+                $context = Current::context() ?? $this;
+                $own     = $this->own[$context] ?? [];
+                unset($own[$offset]);
+                $this->own[$context] = $own;
+            }
+        };
     }
 
     /**
