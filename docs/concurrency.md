@@ -37,13 +37,17 @@ rendering a view into one): echoed output and views were cut and mixed between r
   the first costs 130 ms and 17 MiB). No spare is booted. The pool keeps as many applications as
   were in use at once in the last 60 seconds (`$window`) and drops the rest when it is next used.
   At most `maxApplications` (128) exist; requests above that wait for one to come free.
-- Octane's listeners reset the application before the request, and the container goes back to
-  what it held after boot once the request is over.
+- Octane's listeners reset the application before the request, and its properties (the
+  container's bindings, instances and callbacks, the service providers) go back to what they held
+  after boot once the request is over: what a request registers, such as a singleton, `extend()`, a
+  contextual binding or a runtime provider, does not reach the next request.
 - Laravel's process-wide pointers (the container and facades, Eloquent's connection resolver and
   event dispatcher, the paginator's resolvers, `HandleExceptions`, Blade components' view
-  factory, Carbon's translator) follow the request's coroutine: `Current` proxies them, or, when
+  factory, Carbon's translator, and the instances `Facade::swap()` and `fake()` store) follow the request's coroutine: `Current` proxies them, or, when
   classes have registered context-local state (`phasync::$contextStateDefaults`) by the time the
   first application has booted, each application's own `phasync::$contextState` holds them.
+- Octane's `GiveNewRequestInstanceToPaginator` is replaced by a no-op: it would point the paginator's
+  resolvers at the application of the request that ran it, for every request.
 - Output buffers belong to the process. With phasync-ext each request runs in `virtualize()`,
   which gives it its own; without it, a wait inside a view while it renders can mix the output
   of requests that overlap there, and stray output (`echo`, `dump()`) ends the worker.
@@ -54,3 +58,4 @@ rendering a view into one): echoed output and views were cut and mixed between r
 State that other packages keep in static properties is shared by the requests that overlap in a
 worker. `tests/StaticsTest.php` classifies every static property of `laravel/framework` and the
 classes it runs on (`tests/statics/allowlist.php`), and fails on one that is new after an upgrade.
+[shared-state.md](shared-state.md) lists what a request can leave behind for the next, and what to do instead.

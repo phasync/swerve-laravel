@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Fix: what a request registered in its application's container (a singleton, `resolving()`,
+  `extend()`, a contextual binding, an alias, a tag, a service provider registered at runtime)
+  reached the requests after it. The application's properties go back to what they held after boot (#8).
+- Fix: `Mail::fake()`, `Event::fake()`, `Queue::fake()` and every other `Facade::swap()` outlived the request
+  and applied to the others, as `Facade::$resolvedInstance` is process-wide. Each request has its own (#9).
+- Fix: Octane's `GiveNewRequestInstanceToPaginator` pointed the paginator's resolvers at the application of the
+  request that ran it, so a concurrent request paginated with another's. The listener is a no-op (#10).
+- Fix: the view provider's terminating callback emptied the Blade components' view factory, which the next
+  component then cached, from the application of whichever request met it first. Put back after terminating (#11).
+- `docs/shared-state.md`: what a request can leave behind for the next that the adapter does not undo, in three
+  groups (same on stock Octane, only with overlapping requests, process-level), and what to do instead.
+- Tests: `tests/IsolationTest.php`, a matrix of per-request state (session, auth, CSRF, cookies, locale, config,
+  URL, validation, route model binding, terminable middleware, container registrations, facade fakes, the
+  paginator and components, concurrent queries on MariaDB when it is reachable) with the overlapping requests
+  and the requests after them.
 - The applications are a `phasync\Util\Pool`, which replaces the handler's own pool. New third
   argument `window` (60 seconds) and fourth `maxApplications` (128): at most that many exist,
   requests above it wait; the pool keeps as many applications as were in use at once within the

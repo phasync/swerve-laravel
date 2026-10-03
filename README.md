@@ -146,7 +146,7 @@ that runs at the same time.
   the request that takes it runs with. When the application has context-local state registered
   (classes that put their static properties in `phasync::$contextStateDefaults`) by the time the first application has booted, the state is the application's, as its
   instance properties are, Laravel's pointers to the application are its own, and the reset above
-  applies on top. Otherwise the process-wide pointers are proxied ([docs/concurrency.md](docs/concurrency.md)). Registering
+  applies on top. Otherwise the process-wide pointers are proxied ([docs/concurrency.md](docs/concurrency.md); what a request can leave behind for the next, and what to do instead: [docs/shared-state.md](docs/shared-state.md)). Registering
   state after that point fails every later request with a `LogicException`. A WebSocket callback
   keeps a copy of the state its request left it.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
