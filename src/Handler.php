@@ -58,7 +58,7 @@ final class Handler implements RequestHandlerInterface
     /** @var Pool<Application> the booted applications: the ones requests are using, and idle ones kept for the window */
     private readonly Pool $pool;
 
-    /** @var \WeakMap<Application, array{array, array, array}> what each application's container held when it was booted */
+    /** @var \WeakMap<Application, array<string, mixed>> each application's properties as they were when it was booted: its container and providers */
     private \WeakMap $booted;
 
     /** Each request runs in phasync-ext's virtualize(): its output buffers are its own */
@@ -203,11 +203,11 @@ final class Handler implements RequestHandlerInterface
                 $request->route()?->flushController();
                 // What the request resolved or registered goes, as when Octane drops its sandbox; the
                 // objects the application booted with stay, and so does the state they reset themselves
-                \Closure::bind(function (array $instances, array $rebound, array $terminating) {
-                    $this->instances            = $instances;
-                    $this->reboundCallbacks     = $rebound;
-                    $this->terminatingCallbacks = $terminating;
-                }, $app, Application::class)(...$this->booted[$app]);
+                \Closure::bind(function (array $booted) {
+                    foreach ($booted as $name => $value) {
+                        $this->$name = $value;
+                    }
+                }, $app, Application::class)($this->booted[$app]);
                 $reset = true;
             } catch (\Throwable $e) {
                 $app[ExceptionHandler::class]->report($e);
@@ -293,7 +293,7 @@ final class Handler implements RequestHandlerInterface
                 $app->make($service);
             }
         }
-        $this->booted[$app] = \Closure::bind(fn () => [$this->instances, $this->reboundCallbacks, $this->terminatingCallbacks], $app, Application::class)();
+        $this->booted[$app] = \Closure::bind(fn () => \get_object_vars($this), $app, Application::class)();
         $state->sync(); // classes other applications declared while this one booted
         $this->states[$app] = $state;
 
