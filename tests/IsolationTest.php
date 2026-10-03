@@ -229,7 +229,7 @@ function iso_mariadb_up(): bool
 
 test('concurrent requests do not share a database connection, transaction, session variable, temp table or query log', function () {
     with_app(function (string $addr) {
-        [$a, $b] = array_map(fn ($r) => \json_decode($r['body'], true), overlapping([[new Browser($addr), '/iso-db/A'], [new Browser($addr), '/iso-db/B']]));
+        [$a, $b] = \array_map(fn ($r) => \json_decode($r['body'], true), overlapping([[new Browser($addr), '/iso-db/A'], [new Browser($addr), '/iso-db/B']]));
         expect($a['start'] < $b['end'] && $b['start'] < $a['end'])->toBeTrue('the requests did not overlap');
         expect([$a['conn'] !== $b['conn'], $a['level'], $b['level'], $a['var'], $b['var'], $a['tmp'], $b['tmp'], $a['log'], $b['log']])
             ->toBe([true, 1, 1, 'A', 'B', ['A'], ['B'], 3, 3]);

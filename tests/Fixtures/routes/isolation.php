@@ -4,7 +4,6 @@
 // Each probe reads some state a request can change, which no other request may see: the routes read it,
 // set it, wait, and read it again, while another request overlaps or follows.
 
-use App\Models\User;
 use Carbon\Carbon;
 use Carbon\CarbonInterval;
 use Illuminate\Auth\Access\Response;
@@ -31,8 +30,8 @@ use Illuminate\Support\Uri;
 use Illuminate\View\Component;
 
 // MariaDB (the test container on :13306) for queries that really wait; the tests skip when it is not there
-\config(['database.connections.isomysql' => [
-    'driver' => 'mysql', 'host' => \getenv('ISO_MYSQL_HOST') ?: '127.0.0.1', 'port' => \getenv('ISO_MYSQL_PORT') ?: 13306,
+config(['database.connections.isomysql' => [
+    'driver'   => 'mysql', 'host' => \getenv('ISO_MYSQL_HOST') ?: '127.0.0.1', 'port' => \getenv('ISO_MYSQL_PORT') ?: 13306,
     'database' => 'adv_resources', 'username' => 'root', 'password' => 'test', 'charset' => 'utf8mb4',
 ]]);
 
@@ -152,13 +151,14 @@ if (!\function_exists('iso_static_probes')) {
             'facade-event-fake'      => [$persist(fn () => Event::fake()), fn () => $toBe(Event::getFacadeRoot() instanceof EventFake), 'flag'],
             'facade-mail-fake'       => [$persist(fn () => Mail::fake()), fn () => $toBe(Mail::getFacadeRoot() instanceof MailFake), 'flag'],
             'facade-queue-fake'      => [$persist(fn () => Queue::fake()), fn () => $toBe(Queue::getFacadeRoot() instanceof QueueFake), 'flag'],
-            // The paginator's resolvers, which read the request and the view factory of the application
+            // The paginator's resolvers, which read the request and the view factory of the application (the marker is an
+            // instance in the request's container, as the view factory's shared data outlives the request on Octane too)
             'paginator-page'         => [$none, fn () => (string) Paginator::resolveCurrentPage(), 'ambient'],
             'paginator-path'         => [$none, fn () => \basename(Paginator::resolveCurrentPath()), 'ambient'],
             'paginator-query'        => [$none, fn () => (string) (Paginator::resolveQueryString()['page'] ?? 'none'), 'ambient'],
-            'paginator-views'        => [$persist(fn ($t) => View::share('iso', $t)), fn () => $digit(Paginator::viewFactory()->shared('iso')), 'tag'],
+            'paginator-views'        => [$persist(fn ($t) => app()->instance('iso.tag', $t)), fn () => $digit(Paginator::viewFactory()->getContainer()['iso.tag'] ?? null), 'tag'],
             // The view factory a component caches on first use
-            'component-factory'      => [$persist(fn ($t) => View::share('iso', $t)), fn () => $digit((fn () => $this->factory()->shared('iso'))->call(new IsoComponent())), 'tag'],
+            'component-factory'      => [$persist(fn ($t) => app()->instance('iso.tag', $t)), fn () => $digit((fn () => $this->factory()->getContainer()['iso.tag'] ?? null)->call(new IsoComponent())), 'tag'],
             // Resolvers that read the application's request
             'uri-resolver'           => [$none, fn () => \preg_match('/^h(\d)\.test$/', Uri::to('/')->host(), $m) ? $m[1] : (string) Uri::to('/')->host(), 'ambient'],
             'gate-user'              => [$persist(fn ($t) => Auth::setUser(new GenericUser(['id' => $t]))), fn () => $digit(Gate::inspect('iso-who')->message()), 'tag'],
@@ -202,7 +202,7 @@ if (!\class_exists('IsoTerm')) {
 
         public function terminate(Request $request, $response): void
         {
-            \file_put_contents(\storage_path('iso-term.log'), \json_encode([
+            \file_put_contents(storage_path('iso-term.log'), \json_encode([
                 'url'     => $request->route('tag'),
                 'header'  => $response->headers->get('X-Iso'),
                 'current' => Route::current()?->parameter('tag'),
@@ -256,7 +256,7 @@ Route::get('/iso-who', function (Request $request) {
     $before = [Auth::check(), Auth::user()?->name, $request->user()?->name];
     swerve_test_wait((float) $request->query('wait', 0.3));
 
-    return ['start' => $start, 'before' => $before, 'after' => [Auth::check(), Auth::user()?->name, $request->user()?->name, \auth()->guard()->user()?->name], 'end' => \microtime(true)];
+    return ['start' => $start, 'before' => $before, 'after' => [Auth::check(), Auth::user()?->name, $request->user()?->name, auth()->guard()->user()?->name], 'end' => \microtime(true)];
 });
 
 // Two queries that really wait (SELECT SLEEP): connection, transaction, session variable, temp table and query log of the request
