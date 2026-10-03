@@ -7,11 +7,16 @@
 - Fix: without phasync-ext concurrent streams mixed their output (the callbacks' output buffers stack
   in the worker, so an echo reached the stream that started last). Stream callbacks now run one at a
   time per worker, the others waiting their turn; with phasync-ext they overlap as before (#5).
-- Fix: output a route echoes outside its response (`echo`, `dump()`) is no longer captured around the
-  kernel and put before the response's content: without phasync-ext output buffers are the worker's, so
-  a request that waited handed its buffer to another. It goes to the worker's stdout; with phasync-ext
-  it is dropped. A route that echoed and then waited made the request fail with phasync-ext
-  ("ended without a response"); it now answers with its response.
+- Stray output (`echo`, `print`, `dump()` outside the response) is not supported without phasync-ext:
+  swerve ends the worker with exit status 4 and a message naming the request and the route's
+  line, and starts a new one. With phasync-ext it is dropped. The handler no longer captures it
+  around the kernel (the earlier capture put it before the response's content), and a route that
+  echoed and then waited now answers with its response.
+- The response of a request that runs virtualized (phasync-ext) is handed over with
+  `Virtual::run(..., handOver: true)`; the `echo ' '` and flag workaround is gone.
+- Tests: stray output has tests of its own; the skeleton's routes leave the worker's pid unchanged.
+- Depends on the development versions of phasync/phasync and phasync/swerve (`dev-main`) until
+  their next tags; install with `minimum-stability` dev and `prefer-stable`.
 - Fix: with context-local state a WebSocket callback kept losing what it set in
   `phasync::$contextState`: the request's end gave its context the defaults. It now keeps a copy
   of what it had (#3).
@@ -25,9 +30,8 @@
   this by itself: when context-local state is registered once the first application has booted,
   `Current` is not used and Laravel's pointers are the application's own; otherwise they are
   proxied as before, and state registered later fails the requests with a `LogicException`.
-  Needs phasync 2.0.0-beta5 or later.
 - Requests overlap in a worker without phasync-ext too, whenever one waits in a coroutine; they no
-  longer take turns. Only `echo` and output buffers around a wait need phasync-ext.
+  longer take turns. Only output buffers around a wait need phasync-ext.
 - `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with
   `url()`, redirects and signed URLs as under PHP-FPM.
 - Requests run in pooled applications that Laravel Octane's listeners reset (`laravel/octane` is
@@ -43,7 +47,7 @@
   installed once, by the first application.
 - A model that no provider boots, and whose `boot()` registers listeners, misses them in a
   request that uses it after another request already booted it (phasync-ext only).
-- Requires phasync/swerve ^0.1.0-beta1 and symfony/psr-http-message-bridge (formerly pulled in
+- Requires symfony/psr-http-message-bridge (formerly pulled in
   by Octane). Use opcache (`opcache.enable_cli=1`): without it every bootstrap recompiles
   Laravel and the worker's memory grows.
 
