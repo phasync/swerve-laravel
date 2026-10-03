@@ -4,7 +4,7 @@
 
 - Tests: every static property of Laravel 13 and the classes it runs on is classified in `tests/statics/allowlist.php`, and
   `tests/StaticsTest.php` fails on one that is not (a new release added it) and on a row that has no property any more.
-- Fix: with `contextState: true` a WebSocket callback kept losing what it set in
+- Fix: with context-local state a WebSocket callback kept losing what it set in
   `phasync::$contextState`: the request's end gave its context the defaults. It now keeps a copy
   of what it had (#3).
 - Fix: `terminating()` callbacks registered while a request runs no longer pile up in the pooled
@@ -12,9 +12,12 @@
 - Docs: streamed responses without phasync-ext, and a client that leaves mid-stream (#5).
 - A worker always has an application ready: when a request takes the last idle one, a spare
   boots in the background (one at a time, not while the worker drains).
-- `new Handler($root, contextState: true)`: each pooled application has a `phasync::$contextState`
-  array of its own, which the request that takes it runs with, so context-local static state
-  belongs to the application; `Current` is not used then. Needs phasync 2.0.0-beta5 or later.
+- Each pooled application has a `phasync::$contextState` array of its own, which the request that
+  takes it runs with, so context-local static state belongs to the application. The handler picks
+  this by itself: when context-local state is registered once the first application has booted,
+  `Current` is not used and Laravel's pointers are the application's own; otherwise they are
+  proxied as before, and state registered later fails the requests with a `LogicException`.
+  Needs phasync 2.0.0-beta5 or later.
 - Requests overlap in a worker without phasync-ext too, whenever one waits in a coroutine; they no
   longer take turns. Only `echo` and output buffers around a wait need phasync-ext.
 - `new Handler($root, '/app')`: an application served in a folder that a proxy strips, with

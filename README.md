@@ -137,12 +137,14 @@ that runs at the same time.
   need, and drops an application that sat unused for 60 seconds (the third argument of `Handler`).
   When a request takes the last idle application, a spare boots in the background (one at a
   time), so the next request finds one ready.
-- **Context-local state:** `new Handler(__DIR__, '', 60.0, contextState: true)` gives each
-  application a `phasync::$contextState` array of its own (phasync 2.0.0-beta5 or later). A request
-  runs with the array of the application it takes, so static properties that are context-local
-  state belong to the application, as its instance properties do. Laravel's pointers to the
-  application are then the application's own, and the reset above applies on top. A WebSocket
-  callback keeps a copy of the state its request left it.
+- **Context-local state:** each application has a `phasync::$contextState` array of its own, which
+  the request that takes it runs with. When the application has context-local state registered
+  (classes that put their static properties in `phasync::$contextStateDefaults`, phasync 2.0.0-beta5
+  or later) by the time the first application has booted, the state is the application's, as its
+  instance properties are, Laravel's pointers to the application are its own, and the reset above
+  applies on top. Otherwise the process-wide pointers are proxied (see Concurrency). Registering
+  state after that point fails every later request with a `LogicException`. A WebSocket callback
+  keeps a copy of the state its request left it.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
   fields, JSON, and uploads, which stay swerve's temporary files (no copy; deleted after the
   request unless moved). Octane's `RequestReceived` listeners reset the application (session,

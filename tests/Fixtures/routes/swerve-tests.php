@@ -359,6 +359,11 @@ Route::get('/go-back', fn () => back());
 // Context-local state (APP_CONTEXT_STATE, tests/ContextStateTest.php): each application has a
 // phasync::$contextState array of its own, and a request runs with the one of its application.
 // An application is told apart by an id kept in its state, as app() is not context-local here
+// How Laravel's process-wide pointer to the application is set: a proxy that follows the request (Current), or the application itself
+Route::get('/state/mode', fn () => [
+    'proxy'      => (new ReflectionClass(Illuminate\Container\Container::getInstance()))->isAnonymous(),
+    'registered' => isset(phasync::$contextStateDefaults['registered']),
+]);
 Route::get('/state/count', function () {
     $id = phasync::$contextState['id'] ??= \bin2hex(\random_bytes(4));
     $n  = phasync::$contextState['counter'] = (phasync::$contextState['counter'] ?? 0) + 1;

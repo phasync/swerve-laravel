@@ -1,10 +1,11 @@
 <?php
 
 /*
- * Handler(contextState: true): each pooled application has a phasync::$contextState array of its own,
- * and a request runs with the one of the application that serves it. The fixture application keeps
- * nothing in static properties that are context-local state, so these tests look at the arrays
- * themselves, through routes that use phasync::$contextState as an application would.
+ * An application that registers context-local state (APP_CONTEXT_STATE makes the fixture register a
+ * slot in phasync::$contextStateDefaults): each pooled application has a phasync::$contextState
+ * array of its own, and a request runs with the one of the application that serves it. The fixture
+ * application keeps nothing in static properties that are context-local state, so these tests look
+ * at the arrays themselves, through routes that use phasync::$contextState as an application would.
  */
 
 const STATE = ['APP_CONTEXT_STATE' => '1'];
@@ -106,4 +107,27 @@ test('a WebSocket callback reads back what it set at its start, while other requ
         }
     }, workers: 1, env: STATE);
     expect($log)->not->toMatch('/error|exception/i');
+});
+
+test('the same handler proxies the process-wide pointers for a plain application, and leaves them to an application with context-local state', function () {
+    $modes = [];
+    foreach (['plain' => [], 'context-local' => STATE] as $name => $env) {
+        with_app(function (string $addr) use ($name, &$modes) {
+            $modes[$name] = (new Browser($addr))->json('/state/mode');
+        }, workers: 1, env: $env);
+    }
+    expect($modes)->toBe([
+        'plain'         => ['proxy' => true, 'registered' => false],
+        'context-local' => ['proxy' => false, 'registered' => true],
+    ]);
+});
+
+test('a plain application that registers context-local state after it booted fails its requests, rather than run with the wrong state', function () {
+    with_app(function (string $addr) {
+        $browser = new Browser($addr);
+        expect($browser->get('/state/count')['status'])->toBe(200);
+        // The class declaration that registers a slot comes too late for the pointers, which were set up as process-wide
+        expect($browser->get('/state/late?set=1')['status'])->toBe(200);
+        expect($browser->get('/state/count')['status'])->toBe(500);
+    }, workers: 1);
 });
