@@ -349,6 +349,21 @@ Route::get('/widget/{name}', function (Request $request, string $name) {
 // The application class bootstrap/app.php returned (APP_CLASS)
 Route::get('/root-url', fn () => ['url' => url('/x')]);
 Route::get('/boots', fn () => ['boots' => \App\Providers\GadgetServiceProvider::$boots]);
+// The application that serves: the number of its boot (tests/PoolTest.php). ?fail=stream returns a stream
+// that throws, which the kernel does not catch, and writes the id to storage/failed-app-id first;
+// ?fail=terminate makes a terminating callback throw
+Route::get('/app-id', function (Request $request) {
+    $id = app('test.app-id');
+    swerve_test_wait(0.001 * (int) $request->query('ms', 0));
+    if ('stream' === $request->query('fail')) {
+        \file_put_contents(storage_path('failed-app-id'), $id);
+
+        return response()->stream(fn () => throw new RuntimeException('failed in application ' . $id));
+    }
+    'terminate' === $request->query('fail') && app()->terminating(fn () => throw new RuntimeException('failed in terminate'));
+
+    return ['id' => $id, 'boots' => \App\Providers\GadgetServiceProvider::$boots];
+})->withoutMiddleware('web');
 Route::get('/app-class', fn () => ['custom' => app() instanceof \App\CustomApplication, 'marker' => app()->swerveTestMarker()]);
 // Eloquent: the creating listener, observer and global scope of App\Models\Gadget on this request
 Route::get('/gadget/{name}', function (Request $request, string $name) {

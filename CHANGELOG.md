@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The applications are a `phasync\Util\Pool`, which replaces the handler's own pool. New fourth
+  argument `maxApplications` (128): at most that many exist, requests above it wait. Idle applications are
+  trimmed by the pool, also without traffic; one that failed is flushed and dropped.
 - Fix: starting on Laravel 12 failed (`Model::$booting` is Laravel 13's).
 - Concurrent by design: a worker serves many requests at once, each in a pooled application of
   its own (it replaces the one-request-at-a-time worker of 0.1.0-alpha2). `docs/concurrency.md`

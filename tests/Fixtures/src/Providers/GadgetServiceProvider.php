@@ -19,6 +19,7 @@ class GadgetServiceProvider extends ServiceProvider
     public function boot(): void
     {
         ++self::$boots;
+        $this->app->instance('test.app-id', self::$boots); // which application serves a request: the number of its boot
         Gadget::observe(GadgetObserver::class);
     }
 }

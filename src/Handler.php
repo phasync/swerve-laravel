@@ -12,6 +12,7 @@ use Laravel\Octane\Events\RequestReceived;
 use Laravel\Octane\Events\RequestTerminated;
 use Laravel\Octane\Listeners\FlushUploadedFiles;
 use phasync\Psr\ServerRequest;
+use phasync\Util\Pool;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
@@ -25,8 +26,9 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *
  *     return new Swerve\Laravel\Handler(__DIR__);
  *
- * Every request runs in an application of its own while it runs, taken from a pool of booted
- * applications. Laravel Octane's listeners reset it (RequestReceived), the HTTP kernel handles
+ * Every request runs in an application of its own while it runs, taken from a phasync\Util\Pool of
+ * booted applications, of which at most $maxApplications exist at once: a request that finds them all
+ * in use waits for one, which is the worker's back-pressure. Laravel Octane's listeners reset it (RequestReceived), the HTTP kernel handles
  * the request and terminates it (terminate() and defer() callbacks, after the response went to
  * swerve), and the container goes back to what it held after boot. Requests share the worker's
  * classes and opcache, and PHP's static properties.
@@ -57,13 +59,11 @@ final class Handler implements RequestHandlerInterface
 
     private readonly Client $client;
 
-    /** @var list<Application> booted applications between requests, the longest idle first */
-    private array $idle = [];
+    /** @var Pool<Application> the booted applications: idle ones, and the ones requests are using */
+    private readonly Pool $pool;
 
-    /** @var \WeakMap<Application, float> when each idle application was last used */
-    private \WeakMap $usedAt;
-
-    private bool $sweeping = false;
+    /** Applications requests hold: the pool's size less this is how many are idle or being booted */
+    private int $busy = 0;
 
     /** @var \WeakMap<Application, array{array, array, array}> what each application's container held when it was booted */
     private \WeakMap $booted;
@@ -74,21 +74,21 @@ final class Handler implements RequestHandlerInterface
     /** @var \WeakMap<Application, AppState> the context-local state of each application */
     private \WeakMap $states;
 
-    /** A spare application is being booted */
-    private bool $sparing = false;
-
     /** The pointers to the application are proxied by {@see Current}, as no class registered context-local state when the first application booted */
     private readonly bool $proxied;
 
     /**
-     * @param string $root        the application's root directory, where composer.json is
-     * @param string $basePath    the folder the application is served under when a reverse proxy
-     *                            strips it before swerve sees the request, such as '/demos/app';
-     *                            url(), redirects and signed URLs then include it, as under PHP-FPM
-     * @param float  $idleSeconds how long an application may sit unused before it is dropped; a
-     *                            worker boots as many as its overlapping requests need
+     * @param string $root            the application's root directory, where composer.json is
+     * @param string $basePath        the folder the application is served under when a reverse proxy
+     *                                strips it before swerve sees the request, such as '/demos/app';
+     *                                url(), redirects and signed URLs then include it, as under PHP-FPM
+     * @param float  $idleSeconds     how long an application may sit unused before it is dropped; a
+     *                                worker boots as many as its overlapping requests need
+     * @param int    $maxApplications the most applications a worker has at once, about 0.5 MiB each
+     *                                while a request uses it; requests beyond that wait for one to
+     *                                come free
      */
-    public function __construct(private readonly string $root, private readonly string $basePath = '', private readonly float $idleSeconds = 60.0)
+    public function __construct(private readonly string $root, private readonly string $basePath = '', float $idleSeconds = 60.0, private readonly int $maxApplications = 128)
     {
         // As under Octane: Laravel then hands a generator stream's callback over as it is, and the client yields its chunks
         $_SERVER['LARAVEL_OCTANE'] = 1;
@@ -101,8 +101,8 @@ final class Handler implements RequestHandlerInterface
         $this->virtual = Virtual::available();
         $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'), $this->virtual);
         $this->booted  = new \WeakMap();
-        $this->usedAt  = new \WeakMap();
         $this->states  = new \WeakMap();
+        $this->pool    = new Pool($this->create(...), $maxApplications, $idleSeconds, static fn (Application $app) => $app->flush());
         $app->flush();
         self::$current = $this;
     }
@@ -134,17 +134,17 @@ final class Handler implements RequestHandlerInterface
     {
         // Reading and parsing the body happens here, before the application is made
         [$laravelRequest, $context] = $this->client->marshalRequest($request);
-        $this->sweeping || $this->startSweeping();
-        \count($this->idle) > 1 || $this->spare(); // the request takes the last application, or boots one
+        $this->checkMode();
+        $app = $this->take();
         if ($this->virtual) {
             // The response is what the application hands over, and the request goes on in virtualize()
             // after that; what it prints is discarded, as the response is not made of it
-            return Virtual::run($context['psr'], function (\Closure $respond) use ($laravelRequest, $context) {
+            return Virtual::run($context['psr'], function (\Closure $respond) use ($app, $laravelRequest, $context) {
                 $context['respond'] = $respond;
-                $this->serve($laravelRequest, $context);
+                $this->serve($app, $laravelRequest, $context);
             }, handOver: true);
         }
-        $serve = fn () => $this->serve($laravelRequest, $context);
+        $serve = fn () => $this->serve($app, $laravelRequest, $context);
         if (isset($context['detached'])) {
             \phasync::go(function () use ($serve, $context) {
                 try {
@@ -172,25 +172,52 @@ final class Handler implements RequestHandlerInterface
     }
 
     /**
-     * One request, in an application of its own while it runs: from the pool, reset by Octane's
-     * listeners afterwards. The response is handed over as soon as the kernel made it; terminate()
-     * and the reset follow in the same coroutine, after swerve got the response.
+     * An application from the pool, which waits while all are in use. Taking the last idle one has
+     * a spare made, so that the next request finds one ready.
      */
-    private function serve(Request $request, \ArrayObject $context): void
+    private function take(): Application
     {
-        $this->checkMode();
-        if (null === ($app = \array_pop($this->idle))) {
-            $app = $this->boot();
-        } else {
-            $this->states[$app]->adopt();
+        $app = $this->pool->borrow();
+        ++$this->busy;
+        if ($this->noneIdle()) {
+            // After the request got going: warm() boots at once, unless phasync-ext's virtualize() makes it wait. Asked
+            // again then: a burst of requests asks once each, and the pool counts a spare in the making as not idle
+            \phasync::go(function () {
+                \phasync::sleep();
+                $this->noneIdle() && $this->pool->warm();
+            }, context: new \stdClass()); // its own: not the request's, which waits for its coroutines
         }
+
+        return $app;
+    }
+
+    /** Every application is in use, and there is room for another: the pool also counts those being booted, which no request holds */
+    private function noneIdle(): bool
+    {
+        $total = \count($this->pool);
+
+        return $total === $this->busy && $total < $this->maxApplications && !Swerve::draining();
+    }
+
+    /**
+     * One request, in $app, an application of its own while it runs, reset by Octane's listeners
+     * afterwards and given back to the pool. The response is handed over as soon as the kernel made
+     * it; terminate() and the reset follow in the same coroutine, after swerve got the response.
+     */
+    private function serve(Application $app, Request $request, \ArrayObject $context): void
+    {
+        $this->states[$app]->adopt();
         $this->proxied && Current::set($app);
-        // Nothing of this request is reused: the application goes; the error is the response unless one was handed over
+        // Nothing of this request is reused: the pool drops the application (and flushes it); the error is the response unless one was handed over
         $fail = function (\Throwable $e) use ($app, $context) {
-            $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
-            $app[ExceptionHandler::class]->report($e);
-            $this->proxied && Current::unset();
-            $app->flush();
+            try {
+                $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
+                $app[ExceptionHandler::class]->report($e);
+            } finally {
+                $this->proxied && Current::unset();
+                --$this->busy;
+                $this->pool->discard($app);
+            }
         };
         try {
             $this->client->bind($app, $context);
@@ -221,14 +248,14 @@ final class Handler implements RequestHandlerInterface
                 $app[ExceptionHandler::class]->report($e);
             } finally {
                 $this->proxied && Current::unset();
+                --$this->busy;
                 if ($reset) {
                     // The context may live on (a WebSocket callback): with a copy of the state, not the array of an application another request takes now
                     $left = \phasync::$contextState;
                     \phasync::adoptContextState($left);
-                    $this->usedAt[$app] = \microtime(true);
-                    $this->idle[]       = $app;
+                    $this->pool->release($app);
                 } else {
-                    $app->flush();
+                    $this->pool->discard($app);
                 }
             }
         };
@@ -263,59 +290,27 @@ final class Handler implements RequestHandlerInterface
         isset($context['detached']) || $this->virtual ? $after() : \phasync::finally($after);
     }
 
-    private function startSweeping(): void
-    {
-        $this->sweeping = true;
-        \phasync::go(function () {
-            $every = $this->idleSeconds / 6;
-            $next  = \microtime(true) + $every;
-            // Short sleeps: a draining worker waits for this coroutine to end
-            while (!Swerve::draining()) {
-                \phasync::sleep(\min(0.25, $every));
-                if (\microtime(true) < $next) {
-                    continue;
-                }
-                $next  = \microtime(true) + $every;
-                $limit = \microtime(true) - $this->idleSeconds;
-                while ($this->idle && $this->usedAt[$this->idle[0]] <= $limit) {
-                    \array_shift($this->idle)->flush();
-                }
-            }
-        }, context: new \stdClass());
-    }
-
     /**
-     * For a request that takes the last idle application: boot one in the background for the next,
-     * one at a time. Started from handle(), not from a request that runs in virtualize(), where
-     * another virtualize() would nest.
+     * A new application for the pool, booted in a coroutine and context of its own, whichever coroutine
+     * needs it: the application's state is its own from the start. Booted as a request would, in a
+     * virtualize() of its own when phasync-ext has one, the response being the empty one of a run that
+     * echoed nothing.
      */
-    private function spare(): void
+    private function create(): Application
     {
-        if ($this->sparing || Swerve::draining()) {
-            return;
-        }
-        $this->sparing = true;
-        \phasync::go(function () {
-            \phasync::sleep(); // the request goes first
-            $add = function () {
+        return \phasync::await(\phasync::go(function () {
+            $boot = function () use (&$app) {
                 $app = $this->boot();
                 $this->proxied && Current::unset();
-                $this->usedAt[$app] = \microtime(true);
-                $this->idle[]       = $app;
             };
-            try {
-                // As a request's application boots; the response is the empty one of a run that echoed nothing
-                $this->virtual ? Virtual::run(new ServerRequest('GET', '/', ''), $add) : $add();
-            } catch (\Throwable $e) {
-                Swerve::log()->error('A spare application did not boot: {exception}', ['exception' => $e]);
-            } finally {
-                $this->sparing = false;
-            }
-        }, context: new \stdClass()); // its own: not the request's, which waits for its coroutines, and its own state
+            $this->virtual ? Virtual::run(new ServerRequest('GET', '/', ''), $boot) : $boot();
+
+            return $app;
+        }, context: new \stdClass()));
     }
 
     /**
-     * A new application, bootstrapped as the HTTP kernel does, for the pool; it has no request yet.
+     * A new application, bootstrapped as the HTTP kernel does; it has no request yet.
      * It is booted in a state of its own, which the running context keeps.
      */
     private function boot(): Application
