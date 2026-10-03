@@ -5,12 +5,16 @@
 [![PHP](https://img.shields.io/packagist/dependency-v/phasync/swerve-laravel/php)](https://packagist.org/packages/phasync/swerve-laravel)
 ![License](https://img.shields.io/github/license/phasync/swerve-laravel)
 
-**Your Laravel application, one request waiting while another runs.** [swerve](https://github.com/phasync/swerve)
+**Your Laravel application, many requests at once.** [swerve](https://github.com/phasync/swerve)
 is a PHP application server: long-running workers that serve HTTP/1.1 themselves, stream
 request and response bodies, and hold WebSockets and Server-Sent Events. This package lets it
-run a Laravel application unchanged, with each request in an application of its own, as under
-PHP-FPM, and with phasync-ext requests that wait (a query, an API call, `sleep()`) overlap in
-one worker.
+run a Laravel application unchanged. It is concurrent by design: a worker serves many requests
+at once, each in a pooled application of its own, so a request that waits (an API call, a
+coroutine sleeping, and with phasync-ext `sleep()` and queries) does not hold the others.
+
+It requires [Laravel Octane](https://github.com/laravel/octane) (`laravel/octane` ^2.0, installed
+with the package) for the listeners that reset an application between requests; Octane's own
+servers and `octane:install` are not used. phasync-ext is optional.
 
 ```bash
 composer config minimum-stability dev    # phasync and swerve are on their development versions
@@ -38,7 +42,7 @@ under PHP-FPM.
 A route returns `Swerve\Http\WebSocket::from()` for a `ServerRequestInterface` parameter,
 which is swerve's own request. The handshake is an ordinary Laravel request (middleware,
 session, `$request->user()`); the callback runs after it, for as long as the connection is
-open, and holds no Laravel turn: the worker goes on serving requests meanwhile (tested with 250
+open, and holds no application: the worker goes on serving requests meanwhile (tested with 250
 open sockets in one worker).
 
 ```php
@@ -141,7 +145,7 @@ that runs at the same time.
   the request that takes it runs with. When the application has context-local state registered
   (classes that put their static properties in `phasync::$contextStateDefaults`) by the time the first application has booted, the state is the application's, as its
   instance properties are, Laravel's pointers to the application are its own, and the reset above
-  applies on top. Otherwise the process-wide pointers are proxied (see Concurrency). Registering
+  applies on top. Otherwise the process-wide pointers are proxied ([docs/concurrency.md](docs/concurrency.md)). Registering
   state after that point fails every later request with a `LogicException`. A WebSocket callback
   keeps a copy of the state its request left it.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
@@ -188,16 +192,26 @@ that runs at the same time.
 
 ## Before you deploy
 
-- **Use phasync-ext for concurrency.** Without it a worker runs one Laravel request at a time
-  (size `--workers` like PHP-FPM's `pm.max_children`), and a request that waits holds up the
-  others queued in its worker. With it they overlap, each in an application of its own:
-  memory is that of one application per request in flight.
+- **Memory is one application per request in flight** (about 0.6 MiB each beyond the first).
+  Requests overlap while they wait in a coroutine; without phasync-ext `sleep()`, `usleep()`,
+  database queries and curl hold the worker, so size `--workers` like PHP-FPM's `pm.max_children`
+  for an application that waits on those. phasync-ext makes them yield.
 - **Behind a proxy that serves the application in a folder** (`https://example.com/app/`
   forwarded to swerve as `/`), use `new Handler(__DIR__, '/app')`. `url()`, `route()`,
-  `back()` and signed URLs then include the folder, as under PHP-FPM.
+  `back()` and signed URLs then include the folder, as under PHP-FPM. `X-Forwarded-Prefix`
+  does nothing for an application that doesn't trust it.
 - **Run swerve with opcache** (`php -d opcache.enable_cli=1 vendor/bin/swerve ...`, or in the
   CLI's `php.ini`): without it every application recompiles Laravel's files, which is slow and
   makes the worker's memory grow.
+- **`exit`, `die()` and `dd()` end the worker**, and the requests it serves with it.
+- **Open WebSockets count as connections:** without phasync-ext a worker holds about 960; see
+  swerve's [sizing](https://github.com/phasync/swerve/blob/main/docs/production.md#sizing).
+- **Multipart `PUT` and `PATCH` bodies are not parsed**; url-encoded and JSON ones are. Send
+  forms with files as `POST` with `_method=PUT`.
+- **Code and config changes need a reload:** `--watch` during development, `SIGHUP` (a rolling
+  reload) in production. `php artisan optimize` works as usual.
+- **SQLite:** use WAL mode and a busy timeout (`'journal_mode' => 'wal'`, `'busy_timeout' => 5000`
+  in `config/database.php`). With Laravel's defaults, concurrent session writes time out under load.
 - **An application is reused,** as under Octane: state your own code keeps in a singleton or a
   static between requests is shared by the requests that run in that application one after
   the other. Octane's `config/octane.php` `listeners` and `flush` are the place to reset it.
@@ -208,6 +222,9 @@ that runs at the same time.
 |---|---|---|
 | 12 | 8.2 – 8.5 | optional; tested with and without |
 | 13 | 8.3 – 8.5 | optional; tested with and without |
+
+The suite runs on each row without and with phasync-ext. The classification of Laravel's static
+properties (`tests/statics/allowlist.php`) is that of Laravel 13; its test is skipped on 12.
 
 ## License
 

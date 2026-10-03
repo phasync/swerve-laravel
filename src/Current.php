@@ -82,8 +82,8 @@ final class Current
         }, null, Facade::class)();
         \Closure::bind(static fn () => HandleExceptions::$app = $proxy, null, HandleExceptions::class)();
         // A model whose boot threw (Eloquent used outside a request) stays "being booted" for the
-        // process, and every later request would fail on it
-        \Closure::bind(static fn () => Model::$booting = [], null, Model::class)();
+        // process, and every later request would fail on it (Laravel 13; 12 has no such list)
+        \property_exists(Model::class, 'booting') && \Closure::bind(static fn () => Model::$booting = [], null, Model::class)();
         Model::setConnectionResolver(new class implements ConnectionResolverInterface {
             public function connection($name = null)
             {

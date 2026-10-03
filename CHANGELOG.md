@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix: starting on Laravel 12 failed (`Model::$booting` is Laravel 13's).
+- Concurrent by design: a worker serves many requests at once, each in a pooled application of
+  its own (it replaces the one-request-at-a-time worker of 0.1.0-alpha2). `docs/concurrency.md`
+  says what Laravel shares between requests and what the adapter does about it.
 - Tests: every static property of Laravel 13 and the classes it runs on is classified in `tests/statics/allowlist.php`, and
   `tests/StaticsTest.php` fails on one that is not (a new release added it) and on a row that has no property any more.
 - Fix: without phasync-ext concurrent streams mixed their output (the callbacks' output buffers stack
