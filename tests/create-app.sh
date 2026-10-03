@@ -31,6 +31,11 @@ sed -i "s/'busy_timeout' => null/'busy_timeout' => 5000/; s/'journal_mode' => nu
 cp ../routes/swerve-tests.php ../routes/stray-output.php routes/
 grep -q swerve-tests.php routes/web.php || echo "require __DIR__.'/swerve-tests.php';" >> routes/web.php
 grep -q stray-output.php routes/web.php || echo "require __DIR__.'/stray-output.php';" >> routes/web.php
+# The cross-request contamination audit's routes (tests/Audit*Test.php)
+for f in audit-request audit-statics audit-resources audit-extra; do
+    cp ../routes/$f.php routes/
+    grep -q "$f.php" routes/web.php || echo "require __DIR__.'/$f.php';" >> routes/web.php
+done
 
 # An application subclass, which bootstrap/app.php returns when APP_CLASS is set; and a model that
 # registers a listener and a global scope in boot(), with an observer registered by a provider
