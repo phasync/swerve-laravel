@@ -138,10 +138,10 @@ that runs at the same time.
 - **Per worker:** an application is booted on demand (`bootstrap/app.php` is required and the
   HTTP kernel bootstraps: config, providers, `boot()`), and the services Octane warms
   (`octane.warm`) are resolved. A worker boots as many as its overlapping requests
-  need, and drops an application that sat unused for 60 seconds (the third argument of `Handler`).
+  need, and no spare. It keeps as many as were in use at once during the last 60 seconds (the
+  third argument of `Handler`, `$window`) and drops the rest when the pool is next used.
   The fourth, `maxApplications` (128), caps them: it is back-pressure, requests above it wait for
-  an application to come free. The applications are a `phasync\Util\Pool`. When a request takes
-  the last idle one, a spare boots in the background, so the next request finds one ready.
+  an application to come free. The applications are a `phasync\Util\Pool`.
 - **Context-local state:** each application has a `phasync::$contextState` array of its own, which
   the request that takes it runs with. When the application has context-local state registered
   (classes that put their static properties in `phasync::$contextStateDefaults`) by the time the first application has booted, the state is the application's, as its

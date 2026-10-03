@@ -34,9 +34,9 @@ rendering a view into one): echoed output and views were cut and mixed between r
 ## What the adapter does
 
 - A request takes an idle application from the pool, or a new one boots (8 ms and about 0.6 MiB;
-  the first costs 130 ms and 17 MiB). A spare boots in the background when the last idle one is
-  taken, and applications unused for 60 seconds are dropped. At most `maxApplications` (128)
-  exist; requests above that wait for one to come free.
+  the first costs 130 ms and 17 MiB). No spare is booted. The pool keeps as many applications as
+  were in use at once in the last 60 seconds (`$window`) and drops the rest when it is next used.
+  At most `maxApplications` (128) exist; requests above that wait for one to come free.
 - Octane's listeners reset the application before the request, and the container goes back to
   what it held after boot once the request is over.
 - Laravel's process-wide pointers (the container and facades, Eloquent's connection resolver and

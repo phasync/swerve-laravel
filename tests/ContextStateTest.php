@@ -32,8 +32,8 @@ test('each application counts in its own state: overlapping requests never share
             \sort($counters);
             expect($counters)->toBe(\range(1, \count($counters)));
         }
-        // Four at a time, and a spare
-        expect(\count($served))->toBeLessThanOrEqual(5);
+        // Four at a time, no spare
+        expect(\count($served))->toBe(4);
     }, workers: 1, env: STATE);
 });
 
@@ -48,13 +48,14 @@ test('what a request sets in the state is not seen by a request that overlaps it
     }, workers: 1, env: STATE);
 });
 
-test('a streamed response runs in the state of its request, also while the spare boots', function () {
+test('a streamed response runs in the state of its request, also while other applications boot', function () {
     with_app(function (string $addr) {
-        // The callback waits while the spare application boots in its own state, and echoes what the request set in its own.
-        // One at a time: without phasync-ext, overlapping requests mix what they echo while they wait
-        $browser = new Browser($addr);
-        expect($browser->get('/state/stream/a')['body'])->toBe('a')
-            ->and($browser->get('/state/stream/b')['body'])->toBe('b');
+        // The callback waits while the other requests' applications boot in their own state, and echoes what the request set in its own.
+        // The others do not stream: without phasync-ext, overlapping streams mix what they echo while they wait
+        foreach (['a', 'b'] as $tag) {
+            $responses = overlapping([[new Browser($addr), "/state/stream/$tag"], [new Browser($addr), '/state/count'], [new Browser($addr), '/state/count']]);
+            expect($responses[0]['body'])->toBe($tag);
+        }
     }, workers: 1, env: STATE);
 });
 
@@ -62,9 +63,9 @@ test('an idle application takes the slots of classes declared after its state wa
     with_app(function (string $addr) {
         $browser = new Browser($addr);
         $boots   = fn () => $browser->json('/boots')['boots'];
-        // Two applications are idle once the first request has been answered: the one that served it, and the spare
-        $browser->json('/state/count');
-        expect(eventually(fn () => $boots() >= 2, true))->toBeTrue();
+        // Two applications are idle once two requests that overlapped have been answered
+        overlapping(\array_map(fn () => [new Browser($addr), '/state/count'], [1, 2]));
+        expect($boots())->toBeGreaterThanOrEqual(2);
         expect($browser->json('/state/late?set=1'))->toBe(['late' => null]);
         // Both take it, one after the other and both at once
         expect($browser->json('/state/late'))->toBe(['late' => 'v']);

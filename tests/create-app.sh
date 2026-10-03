@@ -40,4 +40,4 @@ grep -q APP_CLASS bootstrap/app.php || sed -i 's/^return Application::configure(
 grep -q GadgetServiceProvider bootstrap/providers.php || sed -i 's/AppServiceProvider::class,/&\n    App\\Providers\\GadgetServiceProvider::class,/' bootstrap/providers.php
 php artisan migrate --force --no-interaction > /dev/null
 # The only file an application adds to run on swerve
-printf "<?php\n\nrequire __DIR__.'/vendor/autoload.php';\n\nreturn new Swerve\\\\Laravel\\\\Handler(__DIR__, (string) getenv('APP_BASE_PATH'), (float) (getenv('APP_IDLE_SECONDS') ?: 60), (int) (getenv('APP_MAX_APPLICATIONS') ?: 128));\n" > swerve.php
+printf "<?php\n\nrequire __DIR__.'/vendor/autoload.php';\n\nreturn new Swerve\\\\Laravel\\\\Handler(__DIR__, (string) getenv('APP_BASE_PATH'), (float) (getenv('APP_WINDOW') ?: 60), (int) (getenv('APP_MAX_APPLICATIONS') ?: 128));\n" > swerve.php

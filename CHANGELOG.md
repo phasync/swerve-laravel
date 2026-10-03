@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-- The applications are a `phasync\Util\Pool`, which replaces the handler's own pool. New fourth
-  argument `maxApplications` (128): at most that many exist, requests above it wait. Idle applications are
-  trimmed by the pool, also without traffic; one that failed is flushed and dropped. A spare is
-  booted by `Pool::warm()` as a request takes the last application that is neither idle nor being
-  booted; its failure is logged. Starting now leaves two applications idle (the readiness probe's, and its spare).
+- The applications are a `phasync\Util\Pool`, which replaces the handler's own pool. New third
+  argument `window` (60 seconds) and fourth `maxApplications` (128): at most that many exist,
+  requests above it wait; the pool keeps as many applications as were in use at once within the
+  window and drops the rest the next time it is used. One that failed is flushed and dropped.
+  No spare is booted: every application after the first is booted for the request that needs it.
 - Fix: starting on Laravel 12 failed (`Model::$booting` is Laravel 13's).
 - Concurrent by design: a worker serves many requests at once, each in a pooled application of
   its own (it replaces the one-request-at-a-time worker of 0.1.0-alpha2). `docs/concurrency.md`
@@ -37,8 +37,6 @@
 - Fix: `terminating()` callbacks registered while a request runs no longer pile up in the pooled
   application; the reset restores them to their post-boot list, as Octane's sandbox does (#4).
 - Docs: streamed responses without phasync-ext, and a client that leaves mid-stream (#5).
-- A worker always has an application ready: when a request takes the last idle one, a spare
-  boots in the background (one at a time, not while the worker drains).
 - Each pooled application has a `phasync::$contextState` array of its own, which the request that
   takes it runs with, so context-local static state belongs to the application. The handler picks
   this by itself: when context-local state is registered once the first application has booted,

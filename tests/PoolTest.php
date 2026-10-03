@@ -65,33 +65,35 @@ test('applications are booted as requests overlap, and dropped after sitting unu
         overlapping($burst);
         expect($boots() - $start)->toBe($booted);
 
-        // Unused for longer than the idle time: they were dropped, a request boots a new one
+        // Unused for longer than the window: a request drops all but the application it takes (the pool shrinks when it is used), so a burst boots again
         \usleep(1_500_000);
-        expect($boots() - $start)->toBeGreaterThan($booted);
-    }, workers: 1, env: ['APP_IDLE_SECONDS' => '0.6']);
+        $boots();
+        $before = $boots();
+        overlapping($burst);
+        expect($boots() - $before)->toBeGreaterThan(1);
+    }, workers: 1, env: ['APP_WINDOW' => '0.6']);
 });
 
-// Starting leaves two applications idle: the one the readiness probe used, and the spare that the probe's taking
-// of the last idle application booted
-test('a request that takes the last idle application leaves a spare booting, so the next request finds one ready', function () {
+// Starting leaves the application the readiness probe booted idle; no spare is booted
+test('overlapping requests boot the applications they need and no spare', function () {
     with_app(function (string $addr) {
-        \usleep(300_000); // the startup spare is booted
         $boots = fn () => (new Browser($addr))->json('/boots')['boots'];
         $start = $boots();
-        overlapping(\array_map(fn () => [new Browser($addr), '/api/wait?ms=300'], [1, 2]));
-        // Two overlapping requests take the two idle applications: nothing is booted for them, and one spare when the last was taken
-        expect($boots() - $start)->toBe(1);
+        overlapping(\array_map(fn () => [new Browser($addr), '/api/wait?ms=300'], [1, 2, 3]));
+        \usleep(500_000);
+        // Three at once: the idle application and two booted for the others
+        expect($boots() - $start)->toBe(2);
     }, workers: 1);
 });
 
-test('a burst boots the applications it needs, and one spare', function () {
+test('a burst boots the applications it needs, and no more', function () {
     with_app(function (string $addr) {
         $boots = fn () => (new Browser($addr))->json('/boots')['boots'];
         $start = $boots();
         overlapping(\array_map(fn () => [new Browser($addr), '/api/wait?ms=300'], \range(1, 6)));
         \usleep(500_000);
-        // Six at once: four more than the two idle, and one spare (or two, as the startup spare may still be booting)
-        expect($boots() - $start)->toBeGreaterThanOrEqual(5)->toBeLessThanOrEqual(6);
+        // Six at once: five more than the idle one
+        expect($boots() - $start)->toBe(5);
     }, workers: 1);
 });
 
@@ -142,28 +144,17 @@ test('with maxApplications 2, five overlapping requests are all served by the tw
     }, workers: 1, env: ['APP_MAX_APPLICATIONS' => '2']);
 });
 
-test('applications unused for the idle time are dropped, with no traffic to notice it', function () {
+test('applications unused for the window are dropped when the pool is next used', function () {
     with_app(function (string $addr) {
-        $wave  = fn () => \array_map(fn ($r) => \json_decode($r['body'], true)['id'], overlapping(\array_map(fn () => [new Browser($addr), '/app-id?ms=200'], \range(1, 4))));
+        $wave  = fn () => \array_unique(\array_map(fn ($r) => \json_decode($r['body'], true)['id'], overlapping(\array_map(fn () => [new Browser($addr), '/app-id?ms=200'], \range(1, 4)))));
         $first = $wave();
         // Used again soon: the applications that exist serve
         expect(\array_intersect($wave(), $first))->not->toBeEmpty();
-        \usleep(1_500_000); // the idle time is 0.5 s
-        // None of them is left: the four requests were served by applications booted since
-        expect(\array_intersect($wave(), $first))->toBe([]);
-    }, workers: 1, env: ['APP_IDLE_SECONDS' => '0.5']);
-});
-
-test('the spare a wave left is idle when the next wave comes, which pays for no boot', function () {
-    with_app(function (string $addr) {
-        $wave = fn (int $n) => \array_map(fn ($r) => \json_decode($r['body'], true), overlapping(\array_map(fn () => [new Browser($addr), '/app-id?ms=300'], \range(1, $n))));
-        $wave(2);
-        \usleep(500_000);
-        $booted = (new Browser($addr))->json('/boots')['boots'];
-        // Three at once: the two applications of the first wave, and the spare its second request left. An id is the number
-        // of its application's boot, so one above $booted would be an application booted for the request itself
-        expect(\max(\array_column($wave(3), 'id')))->toBeLessThanOrEqual($booted);
-    }, workers: 1);
+        \usleep(1_500_000); // the window is 0.5 s
+        // The first request after it drops all but the application it takes: the wave is served by applications booted since, bar that one
+        (new Browser($addr))->json('/app-id');
+        expect(\count(\array_intersect($wave(), $first)))->toBeLessThanOrEqual(1);
+    }, workers: 1, env: ['APP_WINDOW' => '0.5']);
 });
 
 test('a request that fails drops its application, and the worker serves on', function () {

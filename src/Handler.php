@@ -17,7 +17,6 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Swerve\Http\Virtual;
-use Swerve\Swerve;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -41,9 +40,6 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  * Output a route prints outside its response (echo, dd()) is not supported without phasync-ext:
  * swerve ends the worker on it. With phasync-ext it is discarded, and the response stays the route's.
  *
- * When a request takes the last idle application, a spare is booted in the background, so that the
- * next request finds one ready.
- *
  * Each application has a phasync::$contextState array of its own, which the request that takes it
  * runs with. Whether the pointers to the application are proxied is decided once, when the first
  * application has booted: if classes have registered context-local state by then
@@ -59,7 +55,7 @@ final class Handler implements RequestHandlerInterface
 
     private readonly Client $client;
 
-    /** @var Pool<Application> the booted applications: idle ones, and the ones requests are using */
+    /** @var Pool<Application> the booted applications: the ones requests are using, and idle ones kept for the window */
     private readonly Pool $pool;
 
     /** @var \WeakMap<Application, array{array, array, array}> what each application's container held when it was booted */
@@ -79,13 +75,14 @@ final class Handler implements RequestHandlerInterface
      * @param string $basePath        the folder the application is served under when a reverse proxy
      *                                strips it before swerve sees the request, such as '/demos/app';
      *                                url(), redirects and signed URLs then include it, as under PHP-FPM
-     * @param float  $idleSeconds     how long an application may sit unused before it is dropped; a
-     *                                worker boots as many as its overlapping requests need
+     * @param float  $window          seconds to look back for the most applications that were in use at
+     *                                once: a worker keeps that many and drops the rest, so it holds
+     *                                what a burst needed for that long
      * @param int    $maxApplications the most applications a worker has at once, about 0.5 MiB each
      *                                while a request uses it; requests beyond that wait for one to
      *                                come free
      */
-    public function __construct(private readonly string $root, private readonly string $basePath = '', float $idleSeconds = 60.0, int $maxApplications = 128)
+    public function __construct(private readonly string $root, private readonly string $basePath = '', float $window = 60.0, int $maxApplications = 128)
     {
         // As under Octane: Laravel then hands a generator stream's callback over as it is, and the client yields its chunks
         $_SERVER['LARAVEL_OCTANE'] = 1;
@@ -99,7 +96,7 @@ final class Handler implements RequestHandlerInterface
         $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'), $this->virtual);
         $this->booted  = new \WeakMap();
         $this->states  = new \WeakMap();
-        $this->pool    = new Pool($this->create(...), $maxApplications, $idleSeconds, static fn (Application $app) => $app->flush());
+        $this->pool    = new Pool($this->create(...), $maxApplications, $window, static fn (Application $app) => $app->flush());
         $app->flush();
         self::$current = $this;
     }
@@ -132,7 +129,7 @@ final class Handler implements RequestHandlerInterface
         // Reading and parsing the body happens here, before the application is made
         [$laravelRequest, $context] = $this->client->marshalRequest($request);
         $this->checkMode();
-        $app = $this->take();
+        $app = $this->pool->borrow();
         if ($this->virtual) {
             // The response is what the application hands over, and the request goes on in virtualize()
             // after that; what it prints is discarded, as the response is not made of it
@@ -166,21 +163,6 @@ final class Handler implements RequestHandlerInterface
         }
 
         return $response;
-    }
-
-    /**
-     * An application from the pool, which waits while all are in use. Taking the last idle one has
-     * a spare made, so that the next request finds one ready.
-     */
-    private function take(): Application
-    {
-        $app = $this->pool->borrow();
-        // Every application is lent: none idle, none being made (count() includes both), so one spare at a time
-        if (\count($this->pool) === $this->pool->lent() && !Swerve::draining()) {
-            $this->pool->warm(static fn (\Throwable $e) => Swerve::log()->error('A spare application did not boot: {exception}', ['exception' => $e]));
-        }
-
-        return $app;
     }
 
     /**
