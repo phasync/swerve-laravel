@@ -159,6 +159,12 @@ Route::get('/echo', function () {
 
     return 'body';
 });
+// Output a route echoes, and then fails
+Route::get('/echo-throw', function () {
+    echo 'echoed before failing';
+
+    throw new RuntimeException('failed after echo');
+});
 Route::get('/defer', function () {
     defer(function () {
         \usleep(700_000);
