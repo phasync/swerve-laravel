@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tests: every static property of Laravel 13 and the classes it runs on is classified in `tests/statics/allowlist.php`, and
+  `tests/StaticsTest.php` fails on one that is not (a new release added it) and on a row that has no property any more.
 - Fix: with `contextState: true` a WebSocket callback kept losing what it set in
   `phasync::$contextState`: the request's end gave its context the defaults. It now keeps a copy
   of what it had (#3).
