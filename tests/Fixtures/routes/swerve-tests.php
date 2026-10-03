@@ -161,25 +161,6 @@ Route::get('/forever', fn () => response()->stream(function () {
 }));
 Route::get('/download', fn () => response()->download(base_path('composer.json')));
 
-Route::get('/echo', function () {
-    echo 'echoed ';
-
-    return 'body';
-});
-// Output a route echoes, and then fails
-Route::get('/echo-throw', function () {
-    echo 'echoed before failing';
-
-    throw new RuntimeException('failed after echo');
-});
-// Output echoed around a wait, before the response exists
-Route::get('/echo-wait/{tag}', function (string $tag) {
-    echo "$tag-";
-    swerve_test_wait(0.1);
-    echo $tag;
-
-    return response()->json(['tag' => $tag]);
-});
 Route::get('/defer', function () {
     defer(function () {
         \usleep(700_000);
@@ -317,14 +298,6 @@ Route::get('/probe/{item}/{tag}', function (Request $request, string $item, stri
     swerve_test_wait((float) $request->query('wait', 0.1));
 
     return ['read' => $read($request, $tag)];
-});
-// What a request echoes, in two parts around a wait
-Route::get('/probe-echo/{tag}', function (Request $request, string $tag) {
-    echo "$tag-";
-    swerve_test_wait((float) $request->query('wait', 0.1));
-    echo $tag;
-
-    return '';
 });
 // A queued cookie, sent with this request's response
 Route::get('/probe-cookie/{tag}', function (Request $request, string $tag) {

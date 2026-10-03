@@ -28,8 +28,9 @@ composer require --no-interaction --no-progress --with-all-dependencies 'phasync
 # SQLite in WAL mode with a busy timeout: with the defaults, concurrent session writes time out
 sed -i "s/'busy_timeout' => null/'busy_timeout' => 5000/; s/'journal_mode' => null/'journal_mode' => 'wal'/; s/'synchronous' => null/'synchronous' => 'normal'/" config/database.php
 
-cp ../routes/swerve-tests.php routes/
+cp ../routes/swerve-tests.php ../routes/stray-output.php routes/
 grep -q swerve-tests.php routes/web.php || echo "require __DIR__.'/swerve-tests.php';" >> routes/web.php
+grep -q stray-output.php routes/web.php || echo "require __DIR__.'/stray-output.php';" >> routes/web.php
 
 # An application subclass, which bootstrap/app.php returns when APP_CLASS is set; and a model that
 # registers a listener and a global scope in boot(), with an observer registered by a provider

@@ -13,7 +13,8 @@ const APP = __DIR__ . '/Fixtures/app';
 /**
  * Start swerve on a free port with the fixture application and wait until it answers.
  *
- * @return array{0: resource, 1: string, 2: string} the process, its address, its log file
+ * @return array{0: resource, 1: string, 2: string, 3: string} the process, its address, its log file,
+ *                                                             and the file its standard error goes to
  */
 function app_start(int $workers = 2, array $env = []): array
 {
@@ -26,9 +27,11 @@ function app_start(int $workers = 2, array $env = []): array
     }
     $addr     = "127.0.0.1:$port";
     $log      = \tempnam(\sys_get_temp_dir(), 'swerve-log');
+    $err      = $log . '.err';
+    \register_shutdown_function(static fn () => @\unlink($err));
     $php      = \trim((string) \getenv('SWERVE_PHP_ARGS'));
     $cmd      = 'exec ' . \PHP_BINARY . " -d opcache.enable_cli=1 $php " . \escapeshellarg(APP . '/vendor/bin/swerve') . " --workers=$workers --grace=5 --http=$addr --log=" . \escapeshellarg($log) . ' ' . \escapeshellarg(APP . '/swerve.php');
-    $proc     = \proc_open($cmd, [['file', '/dev/null', 'r'], ['file', '/dev/null', 'w'], ['file', '/dev/null', 'w']], $pipes, APP, $env + \getenv());
+    $proc     = \proc_open($cmd, [['file', '/dev/null', 'r'], ['file', '/dev/null', 'w'], ['file', $err, 'w']], $pipes, APP, $env + \getenv());
     $deadline = \microtime(true) + 20;
     $ch       = \curl_init("http://$addr/json");
     \curl_setopt_array($ch, [\CURLOPT_RETURNTRANSFER => true, \CURLOPT_TIMEOUT => 1]);
@@ -36,12 +39,20 @@ function app_start(int $workers = 2, array $env = []): array
         if (\microtime(true) > $deadline || !\proc_get_status($proc)['running']) {
             app_stop($proc);
 
-            throw new RuntimeException("swerve did not start:\n" . \file_get_contents($log));
+            throw new RuntimeException("swerve did not start:\n" . \file_get_contents($log) . \file_get_contents($err));
         }
         \usleep(100_000);
     }
 
-    return [$proc, $addr, $log];
+    return [$proc, $addr, $log, $err];
+}
+
+/** Whether the swerve the tests start loads phasync-ext (SWERVE_PHP_ARGS decides). */
+function ext_loaded(): bool
+{
+    static $loaded;
+
+    return $loaded ??= '1' === \trim((string) \shell_exec(\PHP_BINARY . ' ' . \trim((string) \getenv('SWERVE_PHP_ARGS')) . ' -r \'echo (int) extension_loaded("phasync");\' 2>/dev/null'));
 }
 
 /** Stop swerve as SIGTERM does (a graceful drain), and return its exit code. */

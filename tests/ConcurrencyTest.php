@@ -44,17 +44,18 @@ test('overlapping requests in one worker each keep their own request state', fun
         [$bodies]        = overlap($addr, ['/probe/carbon/nb', '/probe/carbon/de', '/probe/carbon/fr', '/probe/carbon/es']);
         $seen['carbon']  = $read($bodies);
         $want['carbon']  = ['januar', 'Januar', 'janvier', 'enero'];
-        // Output: what a view and a route echo, around a wait. PHP's output buffers are the process's,
-        // so only phasync-ext's virtualize() keeps them apart
+        // Output: what a view renders, and what a route echoes, around a wait. PHP's output buffers are the
+        // process's, so only phasync-ext's virtualize() keeps them apart. A route's echo is stray output, which
+        // without phasync-ext ends the worker: each response is its route's own, and nothing of another's
         $ext             = 'true' === (new Browser($addr))->get('/concurrent')['body'];
         [$bodies]        = overlap($addr, \array_map(fn ($t) => "/probe/blade/$t", $tags));
         $seen['blade']   = $read($bodies);
         $want['blade']   = \array_map(fn ($t) => "$t-$t", $tags);
-        [$bodies]        = overlap($addr, \array_map(fn ($t) => "/probe-echo/$t", $tags));
-        $seen['echo']    = $bodies;
-        $want['echo']    = \array_map(fn ($t) => "$t-$t", $tags);
-        if (!$ext) {
-            unset($seen['blade'], $want['blade'], $seen['echo'], $want['echo']);
+        if ($ext) {
+            [$seen['echo']] = overlap($addr, \array_map(fn ($t) => "/probe-echo/$t", $tags));
+            $want['echo']   = $tags;
+        } else {
+            unset($seen['blade'], $want['blade']);
         }
         // A queued cookie goes with its own request's response only
         [, $browsers]    = overlap($addr, \array_map(fn ($t) => "/probe-cookie/$t", $tags));

@@ -1,13 +1,12 @@
 <?php
 
-test('the skeleton: home page, JSON, 404, echoed output', function () {
+test('the skeleton: home page, JSON, 404', function () {
     $log = with_app(function (string $addr) {
         $b = new Browser($addr);
         expect($b->get('/'))->toMatchArray(['status' => 200])
             ->and($b->get('/')['body'])->toContain('Laravel')
             ->and($b->json('/json'))->toMatchArray(['hello' => 'world'])
-            ->and($b->get('/missing')['status'])->toBe(404)
-            ->and($b->get('/echo')['body'])->toBe('echoed body');
+            ->and($b->get('/missing')['status'])->toBe(404);
     });
     expect($log)->toContain('GET /json 200')->not->toMatch('/error|exception/i');
 });
