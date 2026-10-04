@@ -157,6 +157,8 @@ Route::get('/sse', fn () => response()->eventStream(function () {
     }
 }));
 Route::get('/forever', fn () => response()->stream(function () {
+    // A client leaving ends a virtualized request as exit() does: no finally blocks, but the shutdown functions run
+    \Swerve\Swerve::virtualizing() && \register_shutdown_function(fn () => \file_put_contents(storage_path('forever-ended'), \getmypid()));
     try {
         while (true) {
             echo \str_repeat('x', 1000) . "\n";

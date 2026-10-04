@@ -27,6 +27,8 @@ composer require phasync/swerve-laravel
 
 require __DIR__ . '/vendor/autoload.php';
 
+Swerve\Swerve::virtualize(); // with phasync-ext: each request has its own output buffers, as under PHP-FPM
+
 return new Swerve\Laravel\Handler(__DIR__);
 ```
 
@@ -34,7 +36,7 @@ return new Swerve\Laravel\Handler(__DIR__);
 vendor/bin/swerve --http=0.0.0.0:8080 --public=public swerve.php
 ```
 
-That's the whole setup. `public/index.php` stays as it is, so the same application still runs
+That's the whole setup (drop the `virtualize()` line without phasync-ext: it needs the extension). `public/index.php` stays as it is, so the same application still runs
 under PHP-FPM.
 
 ## WebSockets
@@ -170,19 +172,21 @@ that runs at the same time.
   Laravel's view engine buffers output (`ob_start()` in `PhpEngine`, and in `@section`,
   `@component` and `@push`), and PHP's output buffers belong to the process. A wait inside a
   view while it renders, such as a lazily loaded relation, mixes the output of requests that
-  overlap there, unless phasync-ext's `virtualize()` keeps each request's buffers apart.
+  overlap there, unless `Swerve::virtualize()` (phasync-ext) keeps each request's buffers apart.
 - **Output outside the response:** `echo`, `print` and `dump()` in a route are not part of its
   response, and are handled by swerve for every application: see
   [stray output](https://github.com/phasync/swerve/blob/main/docs/stray-output.md). With
-  phasync-ext the output is dropped; without it swerve ends the worker. Return a response
-  (`response()`, a view) instead. A stream callback's echoed output is part of its response: it is
-  captured per response, which without phasync-ext serializes callbacks that echo (see Streaming).
+  `Swerve::virtualize()` the output is the response, as under PHP-FPM: it starts the response, so
+  its status and headers are those of PHP, and what the route returns afterwards (also an error page)
+  is dropped. Without it swerve ends the worker. Return a response (`response()`, a view) instead.
+  A stream callback's echoed output is part of its response (see Streaming).
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
   callback where it next waits: its `finally` blocks run, but the application is dropped
-  instead of reset, and `terminate()` callbacks do not run for that request. Without
-  phasync-ext a stream callback's output is collected in a buffer that belongs to the process, so
+  instead of reset, and `terminate()` callbacks do not run for that request. With
+  `Swerve::virtualize()` the callback's echo goes straight to the client, and a client that leaves
+  ends a callback that echoes as `exit()` does: shutdown functions run, `finally` blocks do not. Without it a stream callback's output is collected in a buffer that belongs to the process, so
   stream callbacks that `echo` run one at a time in a worker, the others waiting their turn (a
   stream that never ends holds the turn; other requests are not held up), and `usleep()` in one
   holds the whole worker. A callback that `yield`s its chunks (`response()->stream(function () {

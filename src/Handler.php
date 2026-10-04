@@ -11,12 +11,11 @@ use Illuminate\Http\Request;
 use Laravel\Octane\Events\RequestReceived;
 use Laravel\Octane\Events\RequestTerminated;
 use Laravel\Octane\Listeners\FlushUploadedFiles;
-use phasync\Psr\ServerRequest;
 use phasync\Util\Pool;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
-use Swerve\Http\Virtual;
+use Swerve\Swerve;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -34,11 +33,11 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *
  * Requests overlap in a worker whenever one waits in a coroutine. Laravel's process-wide pointers
  * to "the" application (app(), the facades, Eloquent's connection resolver, ...) follow the
- * request's coroutine (Current). With phasync-ext's virtualize() each request's output buffers
- * are its own too, which Laravel's view engine needs when a view waits while it renders.
+ * request's coroutine (Current). With `Swerve::virtualize()` (phasync-ext) each request's output
+ * buffers are its own too, which Laravel's view engine needs when a view waits while it renders.
  *
  * Output a route prints outside its response (echo, dd()) is not supported without phasync-ext:
- * swerve ends the worker on it. With phasync-ext it is discarded, and the response stays the route's.
+ * swerve ends the worker on it. With `Swerve::virtualize()` it is the response, as under PHP-FPM.
  *
  * Each application has a phasync::$contextState array of its own, which the request that takes it
  * runs with. Whether the pointers to the application are proxied is decided once, when the first
@@ -60,9 +59,6 @@ final class Handler implements RequestHandlerInterface
 
     /** @var \WeakMap<Application, array<string, mixed>> each application's properties as they were when it was booted: its container and providers */
     private \WeakMap $booted;
-
-    /** Each request runs in phasync-ext's virtualize(): its output buffers are its own */
-    private readonly bool $virtual;
 
     /** @var \WeakMap<Application, AppState> the context-local state of each application */
     private \WeakMap $states;
@@ -92,8 +88,7 @@ final class Handler implements RequestHandlerInterface
         // Context-local state registered by now: the application's own pointers are per context, nothing is proxied
         $this->proxied = [] === \phasync::$contextStateDefaults;
         $this->proxied && Current::install($app);
-        $this->virtual = Virtual::available();
-        $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'), $this->virtual);
+        $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'));
         $this->booted  = new \WeakMap();
         $this->states  = new \WeakMap();
         $this->pool    = new Pool($this->create(...), $maxApplications, $window, static fn (Application $app) => $app->flush());
@@ -130,19 +125,10 @@ final class Handler implements RequestHandlerInterface
         [$laravelRequest, $context] = $this->client->marshalRequest($request);
         $this->checkMode();
         $app = $this->pool->borrow();
-        if ($this->virtual) {
-            // The response is what the application hands over, and the request goes on in virtualize()
-            // after that; what it prints is discarded, as the response is not made of it
-            return Virtual::run($context['psr'], function (\Closure $respond) use ($app, $laravelRequest, $context) {
-                $context['respond'] = $respond;
-                $this->serve($app, $laravelRequest, $context);
-            }, handOver: true);
-        }
-        $serve = fn () => $this->serve($app, $laravelRequest, $context);
         if (isset($context['detached'])) {
-            \phasync::go(function () use ($serve, $context) {
+            \phasync::go(function () use ($app, $laravelRequest, $context) {
                 try {
-                    $serve();
+                    $this->serve($app, $laravelRequest, $context);
                 } finally {
                     $context['done'] = true;
                     \phasync::raiseFlag($context);
@@ -152,7 +138,7 @@ final class Handler implements RequestHandlerInterface
                 \phasync::awaitFlag($context);
             }
         } else {
-            $serve();
+            $this->serve($app, $laravelRequest, $context);
         }
         $response = $context['response'] ?? throw new \RuntimeException('The Laravel application ended without a response');
         // Only swerve holds a streamed body now: dropping it tells the producer the client left
@@ -225,8 +211,8 @@ final class Handler implements RequestHandlerInterface
             }
         };
         $streamed = $response instanceof StreamedResponse || $response instanceof BinaryFileResponse;
-        if ($streamed && !$this->virtual && !isset($context['detached'])) {
-            // The callback runs while swerve reads the body: a coroutine of its own
+        if ($streamed && !isset($context['detached']) && !Swerve::virtualizing()) {
+            // The callback runs while swerve reads the body: a coroutine of its own. Virtualized, it echoes inline
             $context['detached'] = true;
             \phasync::go(function () use ($context, $response, $after, $fail) {
                 try {
@@ -251,21 +237,14 @@ final class Handler implements RequestHandlerInterface
 
             return;
         }
-        // Without a coroutine of its own the request ends once swerve has sent the response
-        isset($context['detached']) || $this->virtual ? $after() : \phasync::finally($after);
+        isset($context['detached']) ? $after() : \phasync::finally($after); // without a coroutine of its own the request ends once swerve has sent the response
     }
 
-    /**
-     * A new application for the pool, booted as a request would be, in a virtualize() of its own when
-     * phasync-ext has one, the response being the empty one of a run that echoed nothing.
-     */
+    /** A new application for the pool, booted as a request would be */
     private function create(): Application
     {
-        $boot = function () use (&$app) {
-            $app = $this->boot();
-            $this->proxied && Current::unset();
-        };
-        $this->virtual ? Virtual::run(new ServerRequest('GET', '/', ''), $boot) : $boot();
+        $app = $this->boot();
+        $this->proxied && Current::unset();
 
         return $app;
     }

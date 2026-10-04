@@ -42,7 +42,7 @@ the wait before or after it.
 
 PHP keeps these per process, and the adapter cannot give a request its own: `ini_set()`,
 `setlocale()`, `date_default_timezone_set()`, `mt_srand()`, `header()` and `http_response_code()`
-(the response is Laravel's, not PHP's), output buffers (with phasync-ext each request has its own;
+(the response is Laravel's, not PHP's), output buffers (with `Swerve::virtualize()` each request has its own;
 without it a wait inside a view while it renders can mix output), `register_shutdown_function()`
 (it runs when the worker ends, not when the request does), `exit()` and fatal errors (they end the
 worker and every request in it; swerve starts another).

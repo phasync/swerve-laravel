@@ -48,7 +48,7 @@ rendering a view into one): echoed output and views were cut and mixed between r
   first application has booted, each application's own `phasync::$contextState` holds them.
 - Octane's `GiveNewRequestInstanceToPaginator` is replaced by a no-op: it would point the paginator's
   resolvers at the application of the request that ran it, for every request.
-- Output buffers belong to the process. With phasync-ext each request runs in `virtualize()`,
+- Output buffers belong to the process. With `Swerve::virtualize()` (phasync-ext) each request runs virtualized,
   which gives it its own; without it, a wait inside a view while it renders can mix the output
   of requests that overlap there, and stray output (`echo`, `dump()`) ends the worker.
 - `Handler::run()`, for Laravel code in a WebSocket callback, runs in a fresh application of its own.

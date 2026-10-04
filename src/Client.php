@@ -16,24 +16,22 @@ use Psr\Http\Message\UploadedFileInterface;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\Request as SymfonyRequest;
 use Symfony\Component\HttpFoundation\Response as SymfonyResponse;
+use Swerve\Swerve;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * The two sides of the exchange with swerve: turns its PSR-7 requests into Laravel requests, and
  * Laravel's responses into PSR-7 responses handed to the waiting Handler::handle().
  *
- * A request's state is an ArrayObject, its "context": 'psr' is swerve's request, 'respond' hands
- * a response to Virtual::run(), and 'handed', 'response', 'returned' and 'upgrade' tell
+ * A request's state is an ArrayObject, its "context": 'psr' is swerve's request, and 'handed',
+ * 'response', 'returned' and 'upgrade' tell
  * Handler::handle() and the coroutine running Laravel where they are.
  *
  * @internal
  */
 final class Client
 {
-    /**
-     * @param bool $virtual each request runs in phasync-ext's virtualize(), by Virtual::run() handing over its response
-     */
-    public function __construct(private readonly string $public, private readonly string $basePath = '', private readonly bool $virtual = false)
+    public function __construct(private readonly string $public, private readonly string $basePath = '')
     {
     }
 
@@ -140,6 +138,24 @@ final class Client
             return;
         }
 
+        if (Swerve::virtualizing()) {
+            // The request is a virtualize() of its own: echo goes to the client as it is made, after the head the
+            // response sets up. The response handed over is what a callback that echoes nothing gets
+            $this->hand($context, new Response($status, $headers));
+            $response->sendHeaders();
+            $callback = $response instanceof StreamedResponse ? $response->getCallback() : null;
+            if ($callback instanceof \Closure && (new \ReflectionFunction($callback))->isGenerator()) {
+                foreach ($callback() as $chunk) {
+                    echo $chunk;
+                    \flush();
+                }
+            } else {
+                $response->sendContent();
+            }
+
+            return;
+        }
+
         // Streamed: the head goes now, and each piece as the callback echoes it
         $pipe = new Pipe();
         $this->hand($context, new Response($status, $headers, new StreamedBody($pipe)));
@@ -169,7 +185,7 @@ final class Client
 
             return;
         }
-        // Without phasync-ext output buffers are the worker's: the buffers of streams that overlap
+        // Without virtualize() output buffers are the worker's: the buffers of streams that overlap
         // would stack, and an echo reach the one that started last. One at a time then; the others wait
         $send = function () use ($response, $pipe, $fiber, $gone) {
             $streaming = true;  // the callback runs: it may be cancelled
@@ -203,7 +219,7 @@ final class Client
                 $pipe->end();
             }
         };
-        $this->virtual ? $send() : Synchronized::run($this, $send);
+        Synchronized::run($this, $send);
     }
 
     /** A 500 for an exception the HTTP kernel did not turn into a response. */
@@ -213,19 +229,13 @@ final class Client
     }
 
     /**
-     * Give swerve the response. Under Virtual::run() that is its $respond closure, and the request goes on
-     * running. Otherwise a request with a coroutine of its own waits until Handler::handle() returned it,
-     * and handle() returns it as soon as the application is done.
+     * Give swerve the response: handle() returns it as soon as the application is done. A request with a
+     * coroutine of its own waits until handle() returned it.
      */
     private function hand(\ArrayObject $context, ResponseInterface $response): void
     {
         if (!isset($context['handed'])) { // not again for an error after a streamed response began
             $context['handed'] = true;
-            if ($this->virtual) {
-                $context['respond']($response);
-
-                return;
-            }
             $context['response'] = $response;
             if (isset($context['detached'])) {
                 \phasync::raiseFlag($context);

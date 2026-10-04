@@ -53,7 +53,7 @@ test('overlapping requests in one worker each keep their own request state', fun
         $want['blade']   = \array_map(fn ($t) => "$t-$t", $tags);
         if ($ext) {
             [$seen['echo']] = overlap($addr, \array_map(fn ($t) => "/probe-echo/$t", $tags));
-            $want['echo']   = $tags;
+            $want['echo']   = \array_map(fn ($t) => "$t-$t", $tags); // the echo is the response: the returned tag is dropped
         } else {
             unset($seen['blade'], $want['blade']);
         }

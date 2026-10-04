@@ -33,16 +33,17 @@
   time per worker, the others waiting their turn; with phasync-ext they overlap as before (#5).
 - Stray output (`echo`, `print`, `dump()` outside the response) is not supported without phasync-ext:
   swerve ends the worker with exit status 4 and a message naming the request and the route's
-  line, and starts a new one. With phasync-ext it is dropped. The handler no longer captures it
+  line, and starts a new one. With `Swerve::virtualize()` it is the response. The handler no longer captures it
   around the kernel (the earlier capture put it before the response's content), and a route that
   echoed and then waited now answers with its response.
-- The response of a request that runs virtualized (phasync-ext) is handed over with
-  `Virtual::run(..., handOver: true)`; the `echo ' '` and flag workaround is gone.
+- Virtualization is swerve's: `Swerve::virtualize()` in `swerve.php` makes each request a virtualize() of its own,
+  and the handler no longer sets one up (no extra coroutine per request). Output a route echoes is the response,
+  as under PHP-FPM; a streamed response's callback echoes straight to the client, with no pipe.
 - A `response()->stream()` callback that is a generator is read by the handler, which writes the chunks it
   yields to the response: no output buffer, so such streams overlap without phasync-ext and take no turn
   (`LARAVEL_OCTANE` is set, as under Octane, so that Laravel hands the generator over as it is).
   Streams whose callback echoes (and `eventStream()`) are unchanged.
-- Tests: the skeleton's routes leave the worker's pid unchanged, and with phasync-ext an echo in a route is
+- Tests: the skeleton's routes leave the worker's pid unchanged, and with `Swerve::virtualize()` an echo in a route is
   harmless; the guard itself is swerve's, with tests there.
 - Depends on the development versions of phasync/phasync and phasync/swerve (`dev-main`) until
   their next tags; install with `minimum-stability` dev and `prefer-stable`.

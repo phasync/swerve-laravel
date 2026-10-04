@@ -14,18 +14,17 @@ test('with phasync-ext a route that echoes answers with its own response, and no
         $pid     = $browser->json('/counter')['pid'];
         $r       = $browser->get('/echo');
         expect($r['status'])->toBe(200)
-            ->and($r['body'])->toBe('body')
-            ->and($r['headers']['content-type'])->toBe(['text/html; charset=utf-8']);
-        // Output before an exception is not part of the error page
+            ->and($r['body'])->toBe('echoed ')
+            ->and($r['headers']['content-type'])->toBe(['text/html; charset=UTF-8']);
+        // Output before an exception has started the response: its status is gone, and the error page is dropped as a returned response is
         $r = $browser->get('/echo-throw');
-        expect($r['status'])->toBe(500)
-            ->and($r['body'])->not->toStartWith('echoed before failing');
-        // Output around a wait: the response comes when the route returns it, with its own headers, also when requests overlap
+        expect($r['status'])->toBe(200)
+            ->and($r['body'])->toBe('echoed before failing');
+        // Output around a wait is the response, with PHP's default headers, also when requests overlap: what the route returns after echoing is dropped
         $tags      = ['a', 'b', 'c', 'd'];
         $responses = overlapping(\array_map(fn ($t) => [new Browser($addr), "/echo-wait/$t"], $tags));
         expect(\array_column($responses, 'status'))->toBe([200, 200, 200, 200])
-            ->and(\array_map(fn ($r) => $r['headers']['content-type'], $responses))->each->toBe(['application/json'])
-            ->and(\array_map(fn ($r) => \json_decode($r['body'], true)['tag'], $responses))->toBe($tags);
+            ->and(\array_column($responses, 'body'))->toBe(\array_map(fn ($t) => "$t-$t", $tags));
         // The same worker serves on
         expect($browser->json('/counter')['pid'])->toBe($pid);
     } finally {
