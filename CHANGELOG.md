@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha4 (2026-10-04)
 
 - Fix: what a request registered in its application's container (a singleton, `resolving()`,
   `extend()`, a contextual binding, an alias, a tag, a service provider registered at runtime)

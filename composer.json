@@ -12,8 +12,8 @@
     ],
     "require": {
         "php": "^8.2",
-        "phasync/phasync": "dev-main",
-        "phasync/swerve": "dev-main",
+        "phasync/phasync": "^2.0.0-beta5",
+        "phasync/swerve": "^0.1.0-beta2",
         "laravel/framework": "^12.0 || ^13.0",
         "laravel/octane": "^2.0",
         "psr/http-message": "^2.0",
