@@ -1,7 +1,7 @@
 <?php
 
 /*
- * WebSockets from Laravel routes: Route::get() returning WebSocket::from(). The fixture's
+ * WebSockets from Laravel routes: Route::get() returning WebSocketResponse::from(). The fixture's
  * callbacks each keep a file in storage/ws-live while they run, counted by GET /ws/live.
  */
 
@@ -107,7 +107,7 @@ test('clients leaving, silently or with a close frame, end every callback', func
     expect($log)->not->toMatch('/error|exception/i');
 });
 
-test('identity: the user taken before WebSocket::from() is the socket\'s own; Laravel inside the callback is not, unless in Handler::run()', function () {
+test('identity: the user taken before WebSocketResponse::from() is the socket\'s own; Laravel inside the callback is not, unless in Handler::run()', function () {
     $log = with_app(function (string $addr) {
         $ann = new Browser($addr);
         $bob = new Browser($addr);

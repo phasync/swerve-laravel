@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Changed (breaking): swerve's ClientRequest, a Scope per request
+
+- Requires phasync and swerve `dev-main`. swerve serves an exchange with a `Swerve\RequestHandler`
+  over a `Swerve\ClientRequest`, no longer a PSR-15 handler: the handler builds the Laravel request
+  straight from the `ClientRequest` (form fields, uploads and JSON as before) and writes Laravel's
+  response to it, a stream's as its callback makes it. `Handler` is no PSR-15 handler any more:
+  `Handler::handle(ClientRequest)`.
+- The `laravel` adapter: `vendor/bin/swerve` serves the application with no `swerve.php`. A
+  `swerve.php` for the handler's settings returns
+  `new Swerve\RequestHandler((new Handler(__DIR__, ...))->handle(...))` and runs with `--adapter=swerve`.
+- WebSockets: a route returns `Swerve\Laravel\WebSocketResponse::from($request, $callback, ...)`, an
+  ordinary response (the refusal, or a `101` that middleware may decorate); the callback gets
+  swerve's `Swerve\WebSocket`. `Swerve\Http\WebSocket` and swerve's PSR-7 request are gone, so a
+  route can no longer ask for a `ServerRequestInterface` of swerve's.
+- Per-application state is this package's: `AppState::$state` (the running request's array, by
+  reference) and `AppState::$defaults` (the slots) replace `phasync::$contextState` and
+  `$contextStateDefaults`, which phasync removed. A `phasync::onScopeChange()` hook binds the array
+  of the application serving a request whenever one of its coroutines runs, by the request's `Scope`.
+- `Current` and Carbon's per-request locale are keyed by the request's `Scope`; the root scope is
+  "no request". `Handler::run()` runs its closure in a `Scope` of its own.
+- `Swerve::virtualize()` is gone from swerve: with phasync-ext a view that waits while it renders
+  mixes its output with an overlapping request's, and `echo` in a route is no longer the response
+  (#15).
+- A stopping worker ends its requests at once (swerve's new stop): a request in flight is answered
+  `503` by swerve. The application's exception handler is decorated so that it neither reports
+  nor renders swerve's `WorkerStoppingException`.
+- The handler loads the application's Composer autoloader: swerve's worker loads only swerve's own
+  dependencies.
+
 ## 0.1.0-alpha4 (2026-10-04)
 
 - Fix: what a request registered in its application's container (a singleton, `resolving()`,

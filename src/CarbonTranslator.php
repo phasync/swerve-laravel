@@ -12,22 +12,22 @@ use Carbon\Translator;
  */
 final class CarbonTranslator extends Translator
 {
-    /** @var \WeakMap<object, string>|null the locale of each request's context */
+    /** @var \WeakMap<\Scope, string>|null the locale of each request's scope */
     private static ?\WeakMap $locales = null;
 
     public function getLocale(): string
     {
-        $context = Current::context();
+        $scope = Current::scope();
 
-        return (null === $context ? null : self::$locales[$context] ?? null) ?? parent::getLocale();
+        return (null === $scope ? null : self::$locales[$scope] ?? null) ?? parent::getLocale();
     }
 
     public function setLocale($locale): void
     {
         parent::setLocale($locale);
-        if ($context = Current::context()) {
+        if ($scope = Current::scope()) {
             self::$locales ??= new \WeakMap();
-            self::$locales[$context] = parent::getLocale();
+            self::$locales[$scope] = parent::getLocale();
         }
     }
 }

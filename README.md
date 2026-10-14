@@ -22,43 +22,42 @@ composer config prefer-stable true        # everything else stays stable
 composer require phasync/swerve-laravel
 ```
 
+```bash
+vendor/bin/swerve --http=0.0.0.0:8080 --public=public
+```
+
+That's the whole setup: the `laravel` adapter serves the application. `public/index.php` stays as
+it is, so the same application still runs under PHP-FPM. The handler's settings (below) take a
+`swerve.php`, run with `--adapter=swerve`:
+
 ```php
 <?php // swerve.php, next to composer.json
 
-require __DIR__ . '/vendor/autoload.php';
-
-Swerve\Swerve::virtualize(); // with phasync-ext: each request has its own output buffers, as under PHP-FPM
-
-return new Swerve\Laravel\Handler(__DIR__);
+return new Swerve\RequestHandler((new Swerve\Laravel\Handler(__DIR__, basePath: '/app'))->handle(...));
 ```
-
-```bash
-vendor/bin/swerve --http=0.0.0.0:8080 --public=public swerve.php
-```
-
-That's the whole setup (drop the `virtualize()` line without phasync-ext: it needs the extension). `public/index.php` stays as it is, so the same application still runs
-under PHP-FPM.
 
 ## WebSockets
 
-A route returns `Swerve\Http\WebSocket::from()` for a `ServerRequestInterface` parameter,
-which is swerve's own request. The handshake is an ordinary Laravel request (middleware,
-session, `$request->user()`); the callback runs after it, for as long as the connection is
-open, and holds no application: the worker goes on serving requests meanwhile (tested with 250
-open sockets in one worker).
+A route returns `Swerve\Laravel\WebSocketResponse::from()`; its callback gets swerve's
+`Swerve\WebSocket`. The handshake is an ordinary Laravel request (middleware, session,
+`$request->user()`); the callback runs after it, for as long as the connection is open, and holds
+no application: the worker goes on serving requests meanwhile (tested with 250 open sockets in one
+worker).
 
 ```php
-use Psr\Http\Message\ServerRequestInterface;
-use Swerve\Http\WebSocket;
+use Illuminate\Http\Request;
+use Swerve\Laravel\WebSocketResponse;
+use Swerve\WebSocket;
 
-Route::get('/echo', fn (ServerRequestInterface $request) => WebSocket::from($request, function (WebSocket $ws) {
+Route::get('/echo', fn (Request $request) => WebSocketResponse::from($request, function (WebSocket $ws) {
     foreach ($ws as $message) {             // ends when the client leaves
         $ws->isBinary() ? $ws->sendBinary($message) : $ws->send("echo: $message");
     }
 }));
 ```
 
-An ordinary `GET` to that route is answered `426 Upgrade Required`.
+An ordinary `GET` to that route is answered `426 Upgrade Required`. `from()` also takes
+`subprotocols`, an `origins` allow-list and `maxMessage`, as swerve's `WebSocket::from()` does.
 
 **Server push.** A socket that only forwards a topic, and any route, command or job that
 publishes to it. Messages reach the subscribers in every worker; the callback ends when its
@@ -67,7 +66,7 @@ client leaves, or with a close frame (1001) when the worker drains.
 ```php
 use Swerve\Swerve;
 
-Route::get('/news', fn (ServerRequestInterface $request) => WebSocket::from($request, function (WebSocket $ws) {
+Route::get('/news', fn (Request $request) => WebSocketResponse::from($request, function (WebSocket $ws) {
     foreach (Swerve::subscribe('news') as $message) {
         $ws->send($message);
     }
@@ -86,15 +85,15 @@ order, so give messages that carry state a version from your database.
 
 **Take the user first.** The callback runs outside any request, and its application is gone: in
 it `app()`, the facades and Eloquent throw. Read what the socket needs before
-`WebSocket::from()`, and run Laravel code from the callback with `Handler::run()`:
+`WebSocketResponse::from()`, and run Laravel code from the callback with `Handler::run()`:
 
 ```php
 use Swerve\Laravel\Handler;
 
-Route::get('/chat', function (Request $request, ServerRequestInterface $psr) {
+Route::get('/chat', function (Request $request) {
     $user = $request->user();               // now, while this request runs
 
-    return WebSocket::from($psr, function (WebSocket $ws) use ($user) {
+    return WebSocketResponse::from($request, function (WebSocket $ws) use ($user) {
         foreach ($ws as $text) {
             $message = Handler::run(fn () => $user->messages()->create(['text' => $text]));
             Swerve::publish('chat', $message->toJson());
@@ -144,13 +143,15 @@ that runs at the same time.
   third argument of `Handler`, `$window`) and drops the rest when the pool is next used.
   The fourth, `maxApplications` (128), caps them: it is back-pressure, requests above it wait for
   an application to come free. The applications are a `phasync\Util\Pool`.
-- **Context-local state:** each application has a `phasync::$contextState` array of its own, which
-  the request that takes it runs with. When the application has context-local state registered
-  (classes that put their static properties in `phasync::$contextStateDefaults`) by the time the first application has booted, the state is the application's, as its
-  instance properties are, Laravel's pointers to the application are its own, and the reset above
-  applies on top. Otherwise the process-wide pointers are proxied ([docs/concurrency.md](docs/concurrency.md); what a request can leave behind for the next, and what to do instead: [docs/shared-state.md](docs/shared-state.md)). Registering
-  state after that point fails every later request with a `LogicException`. A WebSocket callback
-  keeps a copy of the state its request left it.
+- **Per-application state:** each application has an `AppState::$state` array of its own, which
+  the request that takes it runs with: a `phasync::onScopeChange()` hook binds it by the request's
+  `Scope` whenever one of its coroutines runs. When slots were added to `AppState::$defaults` by
+  the time the first application has booted, Laravel's pointers to the application are left to
+  that state, as the application's own, and the reset above applies on top. Otherwise the
+  process-wide pointers are proxied ([docs/concurrency.md](docs/concurrency.md); what a request can
+  leave behind for the next, and what to do instead: [docs/shared-state.md](docs/shared-state.md)).
+  Adding a slot after that point fails every later request with a `LogicException`. A WebSocket
+  callback keeps a copy of the state its request left it.
 - **Per request:** swerve's request becomes a Laravel request: headers, cookies, query, form
   fields, JSON, and uploads, which stay swerve's temporary files (no copy; deleted after the
   request unless moved). Octane's `RequestReceived` listeners reset the application (session,
@@ -168,30 +169,24 @@ that runs at the same time.
   worker, each in its own application. A request waits in a coroutine
   (`phasync::sleep()`, phasync's HTTP client, sockets) with or without phasync-ext; with it
   `sleep()`, `usleep()`, PDO/mysqli queries, curl and `flock()` wait that way as well, and
-  without it they hold the worker, as under any other server. One thing needs phasync-ext:
-  Laravel's view engine buffers output (`ob_start()` in `PhpEngine`, and in `@section`,
-  `@component` and `@push`), and PHP's output buffers belong to the process. A wait inside a
-  view while it renders, such as a lazily loaded relation, mixes the output of requests that
-  overlap there, unless `Swerve::virtualize()` (phasync-ext) keeps each request's buffers apart.
+  without it they hold the worker, as under any other server. Laravel's view engine buffers
+  output (`ob_start()` in `PhpEngine`, and in `@section`, `@component` and `@push`), and PHP's
+  output buffers belong to the process: **a wait inside a view while it renders**, such as a
+  lazily loaded relation with phasync-ext, **mixes the output of requests that overlap there**
+  ([#15](https://github.com/phasync/swerve-laravel/issues/15)). Load what a view needs before it
+  renders (eager loading) until that is fixed.
 - **Output outside the response:** `echo`, `print` and `dump()` in a route are not part of its
-  response, and are handled by swerve for every application: see
-  [stray output](https://github.com/phasync/swerve/blob/main/docs/stray-output.md). With
-  `Swerve::virtualize()` the output is the response, as under PHP-FPM: it starts the response, so
-  its status and headers are those of PHP, and what the route returns afterwards (also an error page)
-  is dropped. Without it swerve ends the worker. Return a response (`response()`, a view) instead.
-  A stream callback's echoed output is part of its response (see Streaming).
+  response: return a response (`response()`, a view) instead. A stream callback's echoed output
+  is part of its response (see Streaming).
 - **Sessions:** Laravel's own drivers (database, file, cookie, Redis), unchanged.
 - **Streaming:** `response()->stream()`, `response()->eventStream()` and downloads go out as the
   callback echoes; `HEAD` requests don't run the callback. A client that leaves cancels the
   callback where it next waits: its `finally` blocks run, but the application is dropped
-  instead of reset, and `terminate()` callbacks do not run for that request. With
-  `Swerve::virtualize()` the callback's echo goes straight to the client, and a client that leaves
-  ends a callback that echoes as `exit()` does: shutdown functions run, `finally` blocks do not. Without it a stream callback's output is collected in a buffer that belongs to the process, so
-  stream callbacks that `echo` run one at a time in a worker, the others waiting their turn (a
-  stream that never ends holds the turn; other requests are not held up), and `usleep()` in one
-  holds the whole worker. A callback that `yield`s its chunks (`response()->stream(function () {
-  yield ...; })`) needs no buffer and overlaps with or without phasync-ext, as do all streams with
-  it.
+  instead of reset, and `terminate()` callbacks do not run for that request. A stream callback's
+  output is collected in a buffer that belongs to the process, so stream callbacks that `echo`
+  run one at a time in a worker, the others waiting their turn (a stream that never ends holds
+  the turn; other requests are not held up). A callback that `yield`s its chunks
+  (`response()->stream(function () { yield ...; })`) needs no buffer and overlaps.
 - **WebSockets:** see [WebSockets](#websockets). The connection is swerve's; only the
   handshake is a Laravel request.
 
@@ -202,13 +197,21 @@ that runs at the same time.
   database queries and curl hold the worker, so size `--workers` like PHP-FPM's `pm.max_children`
   for an application that waits on those. phasync-ext makes them yield.
 - **Behind a proxy that serves the application in a folder** (`https://example.com/app/`
-  forwarded to swerve as `/`), use `new Handler(__DIR__, '/app')`. `url()`, `route()`,
+  forwarded to swerve as `/`), use `new Handler(__DIR__, basePath: '/app')` in a `swerve.php`
+  (see the setup above). `url()`, `route()`,
   `back()` and signed URLs then include the folder, as under PHP-FPM. `X-Forwarded-Prefix`
   does nothing for an application that doesn't trust it.
 - **Run swerve with opcache** (`php -d opcache.enable_cli=1 vendor/bin/swerve ...`, or in the
   CLI's `php.ini`): without it every application recompiles Laravel's files, which is slow and
   makes the worker's memory grow.
 - **`exit`, `die()` and `dd()` end the worker**, and the requests it serves with it.
+- **A stop ends the requests in flight.** On a shutdown or reload swerve stops a worker at once:
+  a request still waiting then ends, answered `503` by swerve when nothing was sent yet (Laravel
+  neither reports nor renders it); clients retry. `defer()` work that waits is cut short too.
+- **A validation closure that waits holds the worker with phasync-ext** (a query in a closure
+  rule: Laravel calls it through `Closure::__invoke()`,
+  [phasync-ext-src#106](https://github.com/phasync/phasync-ext-src/issues/106)). A rule class
+  is not affected.
 - **Open WebSockets count as connections:** without phasync-ext a worker holds about 960; see
   swerve's [sizing](https://github.com/phasync/swerve/blob/main/docs/production.md#sizing).
 - **Multipart `PUT` and `PATCH` bodies are not parsed**; url-encoded and JSON ones are. Send

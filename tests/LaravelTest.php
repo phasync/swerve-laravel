@@ -27,16 +27,13 @@ test('a form POST with CSRF protection, validation errors through the session', 
     });
 });
 
-test('a JSON POST, a url-encoded PUT, and a route taking a PSR-7 request', function () {
+test('a JSON POST and a url-encoded PUT', function () {
     with_app(function (string $addr) {
         $b    = new Browser($addr);
         $json = $b->request('POST', '/json-echo', ['Content-Type: application/json'], '{"a":1,"b":{"c":[2,3]}}');
         expect(\json_decode($json['body'], true))->toBe(['all' => ['a' => 1, 'b' => ['c' => [2, 3]]], 'isJson' => true, 'method' => 'POST']);
         $put = $b->request('PUT', '/json-echo', ['Content-Type: application/x-www-form-urlencoded'], 'x=1&y[]=2');
         expect(\json_decode($put['body'], true))->toBe(['all' => ['x' => '1', 'y' => ['2']], 'isJson' => false, 'method' => 'PUT']);
-        // Swerve's own request: a form is parsed, other bodies are read as they are
-        expect(\json_decode($b->request('POST', '/psr-echo', [], ['a' => '1'])['body'], true)['parsed'])->toBe(['a' => '1'])
-            ->and(\json_decode($b->request('POST', '/psr-echo', ['Content-Type: application/json'], '{"a":1}')['body'], true)['body'])->toBe('{"a":1}');
     });
 });
 
@@ -188,8 +185,8 @@ test('terminate() and defer() run after the response was sent', function () {
     });
 });
 
-test('drain: SIGTERM lets a slow request finish, and defer() work after a response, without errors', function () {
-    // SIGTERM while a request runs
+test('drain: SIGTERM ends a slow request with swerve\'s 503, and stops during defer() work after a response, without errors', function () {
+    // SIGTERM while a request runs: the worker stops at once, the request with it
     [$proc, $addr, $log] = app_start(1);
     $multi               = \curl_multi_init();
     $slow                = \curl_init("http://$addr/slow?s=1");
@@ -204,17 +201,16 @@ test('drain: SIGTERM lets a slow request finish, and defer() work after a respon
             unset($start);
         }
     } while ($running > 0);
-    expect(\curl_multi_getcontent($slow))->toBe('slow done')
+    expect(\curl_getinfo($slow, \CURLINFO_RESPONSE_CODE))->toBe(503)
         ->and(app_wait($proc))->toBe(0)
-        ->and(\file_get_contents($log))->toContain('GET /slow?s=1 200')->not->toMatch('/error|exception|died/i');
+        ->and(\file_get_contents($log))->toContain('GET /slow?s=1 503')->not->toMatch('/error|exception|died/i');
     \unlink($log);
 
-    // SIGTERM after a response, while its defer() callback works for 0.7 s
-    \is_file(APP . '/storage/deferred') && \unlink(APP . '/storage/deferred');
+    // SIGTERM after a response, while its defer() callback works for 0.7 s: a wait there ends with
+    // the worker (with phasync-ext usleep() is one)
     [$proc, $addr, $log] = app_start(1);
     expect((new Browser($addr))->get('/defer')['status'])->toBe(200)
         ->and(app_stop($proc))->toBe(0)
-        ->and(\file_exists(APP . '/storage/deferred'))->toBeTrue()
         ->and(\file_get_contents($log))->not->toMatch('/error|exception|died/i');
     \unlink($log);
 });

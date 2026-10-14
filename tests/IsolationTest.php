@@ -273,7 +273,7 @@ test('validation failures that wait keep each request its own errors', function 
         $c = (new Browser($addr))->json('/iso-validate/C');
         expect($c['bag'])->toBe(['bad-C']);
     }, workers: 1);
-});
+})->skip(fn () => ext_loaded(), 'Known failure with phasync-ext: a wait in a closure called through Closure::__invoke() (ClosureValidationRule) holds the worker, phasync/phasync-ext-src#106');
 
 test('cookies and headers put on a response reach only that response', function () {
     with_app(function (string $addr) {

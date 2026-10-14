@@ -98,7 +98,7 @@ test('a burst boots the applications it needs, and no more', function () {
 });
 
 test('a terminating callback registered by a request runs for that request only, however long the application is pooled', function () {
-    foreach ([[], ['APP_CONTEXT_STATE' => '1']] as $env) {
+    foreach ([[], ['APP_STATE' => '1']] as $env) {
         $file = APP . '/storage/terminated.log';
         \is_file($file) && \unlink($file);
         with_app(function (string $addr) use ($file) {

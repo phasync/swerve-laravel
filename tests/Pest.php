@@ -30,7 +30,7 @@ function app_start(int $workers = 2, array $env = []): array
     $err      = $log . '.err';
     \register_shutdown_function(static fn () => @\unlink($err));
     $php      = \trim((string) \getenv('SWERVE_PHP_ARGS'));
-    $cmd      = 'exec ' . \PHP_BINARY . " -d opcache.enable_cli=1 $php " . \escapeshellarg(APP . '/vendor/bin/swerve') . " --workers=$workers --grace=5 --http=$addr --log=" . \escapeshellarg($log) . ' ' . \escapeshellarg(APP . '/swerve.php');
+    $cmd      = 'exec ' . \PHP_BINARY . " -d opcache.enable_cli=1 $php " . \escapeshellarg(APP . '/vendor/bin/swerve') . " --adapter=swerve --workers=$workers --grace=5 --http=$addr --log=" . \escapeshellarg($log) . ' ' . \escapeshellarg(APP . '/swerve.php');
     $proc     = \proc_open($cmd, [['file', '/dev/null', 'r'], ['file', '/dev/null', 'w'], ['file', $err, 'w']], $pipes, APP, $env + \getenv());
     $deadline = \microtime(true) + 20;
     $ch       = \curl_init("http://$addr/json");

@@ -7,7 +7,7 @@
  *
  * category    POINTER                  Laravel's pointer to the running application: the adapter points it at a proxy
  *             CALLBACK-LIST            a list that providers append to in every application: kept as one forwarding entry
- *             DATA                     per-request data the adapter keeps per request or context
+ *             DATA                     per-request data the adapter keeps per request (by its scope)
  *             CONFIG-SET-ONCE-AT-BOOT  configuration the application sets while it boots, the same in every application
  *             HARMLESS-CACHE           a memo or generator, a pure function of its input, shared on purpose
  *             CONSTANT                 never written
@@ -18,7 +18,7 @@
  */
 return [
     'Brick\\Math\\Internal\\CalculatorRegistry::$instance'                                                  => ['CONFIG-SET-ONCE-AT-BOOT', 'private', 'b', 'n/a', 'set by set(), get(), assumed to be called at boot only'],
-    'Carbon\\AbstractTranslator::$singletons'                                                               => ['DATA', 'protected', 'b', 'handled', 'CarbonTranslator keeps locale per context'],
+    'Carbon\\AbstractTranslator::$singletons'                                                               => ['DATA', 'protected', 'b', 'handled', 'CarbonTranslator keeps locale per request scope'],
     'Carbon\\Carbon::$createFromFormatFunction'                                                             => ['CONSTANT', 'protected', 'a', 'n/a', 'never written'],
     'Carbon\\Carbon::$days'                                                                                 => ['CONSTANT', 'protected', 'a', 'n/a', 'never written'],
     'Carbon\\Carbon::$formatFunction'                                                                       => ['CONSTANT', 'protected', 'a', 'n/a', 'never written'],
@@ -77,6 +77,7 @@ return [
     'Illuminate\\Console\\Application::$bootstrappers'                                                      => ['CALLBACK-LIST', 'protected', 'b', 'handled', 'one forwarding callback (artisan under Handler::run only)'],
     'Illuminate\\Console\\Command::$macros'                                                                 => ['NOT-IN-HTTP-PATH', 'protected', 'b', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Console\\Scheduling\\Event::$macros'                                                       => ['NOT-IN-HTTP-PATH', 'protected', 'b', 'n/a', 'CLI/test/dev only'],
+    'Illuminate\\Console\\Scheduling\\Schedule::$alwaysOnOneServer'                                         => ['NOT-IN-HTTP-PATH', 'public', 'bc', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Console\\Scheduling\\Schedule::$interruptible'                                             => ['NOT-IN-HTTP-PATH', 'public', 'bc', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Console\\Scheduling\\Schedule::$macros'                                                    => ['NOT-IN-HTTP-PATH', 'protected', 'b', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Console\\Scheduling\\Schedule::$pausable'                                                  => ['NOT-IN-HTTP-PATH', 'public', 'bc', 'n/a', 'CLI/test/dev only'],
@@ -285,6 +286,7 @@ return [
     'Illuminate\\Queue\\Console\\FlushFailedCommand::$prohibitedFromRunning'                                => ['NOT-IN-HTTP-PATH', 'protected', 'b', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Queue\\Console\\WorkCommand::$hasRegisteredListeners'                                      => ['NOT-IN-HTTP-PATH', 'private', 'b', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Queue\\Queue::$createPayloadCallbacks'                                                     => ['CALLBACK-LIST', 'protected', 'b', 'handled', 'one forwarding callback; per-app lists in container swerve-laravel.callbacks'],
+    'Illuminate\\Queue\\Worker::$flushStickyConnections'                                                    => ['NOT-IN-HTTP-PATH', 'public', 'c', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Queue\\Worker::$killCallback'                                                              => ['NOT-IN-HTTP-PATH', 'protected', 'b', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Queue\\Worker::$killOnTimeout'                                                             => ['NOT-IN-HTTP-PATH', 'public', 'c', 'n/a', 'CLI/test/dev only'],
     'Illuminate\\Queue\\Worker::$memoryExceededExitCode'                                                    => ['NOT-IN-HTTP-PATH', 'public', 'c', 'n/a', 'CLI/test/dev only'],
@@ -338,8 +340,8 @@ return [
     'Illuminate\\Support\\Number::$currency'                                                                => ['UNHANDLED', 'protected', 'b', 'none', 'Number::useLocale/useCurrency called at request time by userland leaks'],
     'Illuminate\\Support\\Number::$locale'                                                                  => ['UNHANDLED', 'protected', 'b', 'none', 'Number::useLocale/useCurrency called at request time by userland leaks'],
     'Illuminate\\Support\\Number::$macros'                                                                  => ['CONFIG-SET-ONCE-AT-BOOT', 'protected', 'b', 'n/a', 'macros registered at boot, again by every application; a macro closure is bound to the instance it is called on, unless it captured an application'],
-    'Illuminate\\Support\\Once::$enabled'                                                                   => ['UNHANDLED', 'protected', 'b', 'planned', 'once() in static context shares one WeakMap across requests; Once::disable() (perf cost) or flush per context'],
-    'Illuminate\\Support\\Once::$instance'                                                                  => ['UNHANDLED', 'protected', 'b', 'planned', 'once() in static context shares one WeakMap across requests; Once::disable() (perf cost) or flush per context'],
+    'Illuminate\\Support\\Once::$enabled'                                                                   => ['UNHANDLED', 'protected', 'b', 'planned', 'once() in static context shares one WeakMap across requests; Once::disable() (perf cost) or flush per request scope'],
+    'Illuminate\\Support\\Once::$instance'                                                                  => ['UNHANDLED', 'protected', 'b', 'planned', 'once() in static context shares one WeakMap across requests; Once::disable() (perf cost) or flush per request scope'],
     'Illuminate\\Support\\Optional::$macros'                                                                => ['CONFIG-SET-ONCE-AT-BOOT', 'protected', 'b', 'n/a', 'macros registered at boot, again by every application; a macro closure is bound to the instance it is called on, unless it captured an application'],
     'Illuminate\\Support\\Pluralizer::$inflector'                                                           => ['HARMLESS-CACHE', 'protected', 'b', 'n/a', 'lazy memoization of pure functions of the arguments'],
     'Illuminate\\Support\\Pluralizer::$language'                                                            => ['CONFIG-SET-ONCE-AT-BOOT', 'protected', 'b', 'n/a', 'set by useLanguage(), assumed to be called at boot only'],

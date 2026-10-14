@@ -12,17 +12,15 @@ use Laravel\Octane\Events\RequestReceived;
 use Laravel\Octane\Events\RequestTerminated;
 use Laravel\Octane\Listeners\FlushUploadedFiles;
 use phasync\Util\Pool;
-use Psr\Http\Message\ResponseInterface;
-use Psr\Http\Message\ServerRequestInterface;
-use Psr\Http\Server\RequestHandlerInterface;
-use Swerve\Swerve;
-use Symfony\Component\HttpFoundation\BinaryFileResponse;
-use Symfony\Component\HttpFoundation\StreamedResponse;
+use Swerve\ClientRequest;
+use Swerve\Laravel\ExceptionHandler as SwerveExceptionHandler;
+use Swerve\WorkerStoppingException;
 
 /**
- * A Laravel application as swerve's request handler, from the project's swerve.php:
+ * A Laravel application served by swerve: the `laravel` adapter's entry ({@see entry()}) makes one
+ * per worker, and so may a swerve.php run with `--adapter=swerve`:
  *
- *     return new Swerve\Laravel\Handler(__DIR__);
+ *     return new Swerve\RequestHandler((new Swerve\Laravel\Handler(__DIR__))->handle(...));
  *
  * Every request runs in an application of its own while it runs, taken from a phasync\Util\Pool of
  * booted applications, of which at most $maxApplications exist at once: a request that finds them all
@@ -33,21 +31,20 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  *
  * Requests overlap in a worker whenever one waits in a coroutine. Laravel's process-wide pointers
  * to "the" application (app(), the facades, Eloquent's connection resolver, ...) follow the
- * request's coroutine (Current). With `Swerve::virtualize()` (phasync-ext) each request's output
- * buffers are its own too, which Laravel's view engine needs when a view waits while it renders.
+ * request's Scope (Current). PHP's output buffers stay the process's: a view that waits while it
+ * renders mixes its output with that of a request overlapping it there.
  *
- * Output a route prints outside its response (echo, dd()) is not supported without phasync-ext:
- * swerve ends the worker on it. With `Swerve::virtualize()` it is the response, as under PHP-FPM.
+ * Output a route prints outside its response (echo, dd()) is not part of the response.
  *
- * Each application has a phasync::$contextState array of its own, which the request that takes it
- * runs with. Whether the pointers to the application are proxied is decided once, when the first
- * application has booted: if classes have registered context-local state by then
- * (phasync::$contextStateDefaults is not empty) the pointers are context-local state too, each
- * application's own, and Current is not used; otherwise Current proxies them. A class that
- * registers context-local state after that, in an application that is served through Current,
- * makes every later request fail with a LogicException: the pointers would be shared.
+ * Each application has an AppState of its own, which the request that takes it runs with
+ * (AppState::$state, swapped by the request's Scope). Whether the pointers to the application are
+ * proxied is decided once, when the first application has booted: if classes have added slots to
+ * AppState::$defaults by then, the pointers are per application already, and Current is not used;
+ * otherwise Current proxies them. A slot added after that, in an application that is served
+ * through Current, makes every later request fail with a LogicException: the pointers would be
+ * shared.
  */
-final class Handler implements RequestHandlerInterface
+final class Handler
 {
     /** The worker's handler, for run() */
     private static self $current;
@@ -60,10 +57,10 @@ final class Handler implements RequestHandlerInterface
     /** @var \WeakMap<Application, array<string, mixed>> each application's properties as they were when it was booted: its container and providers */
     private \WeakMap $booted;
 
-    /** @var \WeakMap<Application, AppState> the context-local state of each application */
+    /** @var \WeakMap<Application, AppState> the state of each application */
     private \WeakMap $states;
 
-    /** The pointers to the application are proxied by {@see Current}, as no class registered context-local state when the first application booted */
+    /** The pointers to the application are proxied by {@see Current}, as no class added a slot to AppState::$defaults when the first application booted */
     private readonly bool $proxied;
 
     /**
@@ -82,11 +79,15 @@ final class Handler implements RequestHandlerInterface
     {
         // As under Octane: Laravel then hands a generator stream's callback over as it is, and the client yields its chunks
         $_SERVER['LARAVEL_OCTANE'] = 1;
+        // Each request's coroutines run with the state of the application serving it
+        \phasync::onScopeChange(AppState::enter(...));
+        // The application's autoloader (the vendor directory swerve runs from): swerve's worker loads only its own dependencies
+        require_once $GLOBALS['_composer_autoload_path'] ?? "$root/vendor/autoload.php";
         // The first application only learns the application's class and warms opcache
         $app = require "$root/bootstrap/app.php";
         $app->make(ConsoleKernel::class)->bootstrap();
-        // Context-local state registered by now: the application's own pointers are per context, nothing is proxied
-        $this->proxied = [] === \phasync::$contextStateDefaults;
+        // Slots added by now: the application's own pointers are per application, nothing is proxied
+        $this->proxied = [] === AppState::$defaults;
         $this->proxied && Current::install($app);
         $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'));
         $this->booted  = new \WeakMap();
@@ -111,59 +112,39 @@ final class Handler implements RequestHandlerInterface
     public static function run(\Closure $callback): mixed
     {
         $handler = self::$current;
-        $task    = static fn () => \phasync::await(\phasync::go(
-            static fn () => $handler->withApplication(static fn () => $callback()),
-            context: new \stdClass(), // its own, so that the application is its own
-        ));
 
-        return $task();
+        // A scope of its own, so that the application is its own
+        return \phasync::await((new \Scope())->run(static fn () => \phasync::go(
+            static fn () => $handler->withApplication(static fn () => $callback()),
+        )));
     }
 
-    public function handle(ServerRequestInterface $request): ResponseInterface
+    /** Serve one exchange: swerve's RequestHandler calls this, in the request's own scope. */
+    public function handle(ClientRequest $client): void
     {
-        // Reading and parsing the body happens here, before the application is made
-        [$laravelRequest, $context] = $this->client->marshalRequest($request);
+        // Reading and parsing the body happens here, before the application is taken
+        $request = $this->client->toLaravel($client);
         $this->checkMode();
-        $app = $this->pool->borrow();
-        if (isset($context['detached'])) {
-            \phasync::go(function () use ($app, $laravelRequest, $context) {
-                try {
-                    $this->serve($app, $laravelRequest, $context);
-                } finally {
-                    $context['done'] = true;
-                    \phasync::raiseFlag($context);
-                }
-            });
-            while (!isset($context['handed']) && !isset($context['done'])) {
-                \phasync::awaitFlag($context);
-            }
-        } else {
-            $this->serve($app, $laravelRequest, $context);
-        }
-        $response = $context['response'] ?? throw new \RuntimeException('The Laravel application ended without a response');
-        // Only swerve holds a streamed body now: dropping it tells the producer the client left
-        unset($context['response']);
-        if (isset($context['detached'])) {
-            $context['returned'] = true;
-            \phasync::raiseFlag($context);
-        }
-
-        return $response;
+        $this->serve($client, $this->pool->borrow(), $request);
     }
 
     /**
      * One request, in $app, an application of its own while it runs, reset by Octane's listeners
-     * afterwards and given back to the pool. The response is handed over as soon as the kernel made
-     * it; terminate() and the reset follow in the same coroutine, after swerve got the response.
+     * afterwards and given back to the pool. The response is written as soon as the kernel made
+     * it; terminate() and the reset follow, after the client has it.
      */
-    private function serve(Application $app, Request $request, \ArrayObject $context): void
+    private function serve(ClientRequest $client, Application $app, Request $request): void
     {
         $this->states[$app]->adopt();
         $this->proxied && Current::set($app);
-        // Nothing of this request is reused: the pool drops the application (and flushes it); the error is the response unless one was handed over
-        $fail = function (\Throwable $e) use ($app, $context) {
+        // Nothing of this request is reused: the pool drops the application (and flushes it). The error
+        // is the response unless one was begun, which is cut off instead, so the client sees it incomplete
+        $fail = function (\Throwable $e) use ($client, $app) {
             try {
-                $this->client->error($context, $e, (bool) $app['config']->get('app.debug'));
+                if ($e instanceof WorkerStoppingException) {
+                    throw $e; // for swerve to end the exchange
+                }
+                $client->headersSent() ? $client->close() : $this->client->error($client, $e, (bool) $app['config']->get('app.debug'));
                 $app[ExceptionHandler::class]->report($e);
             } finally {
                 $this->proxied && Current::unset();
@@ -171,73 +152,51 @@ final class Handler implements RequestHandlerInterface
             }
         };
         try {
-            $this->client->bind($app, $context);
             $kernel = $app->make(HttpKernel::class);
             $request->enableHttpMethodParameterOverride();
             $app['events']->dispatch(new RequestReceived($app, $app, $request));
             $response = $kernel->handle($request);
-        } catch (\Throwable $e) {
-            $fail($e);
-
-            return;
-        }
-        $after = function () use ($app, $kernel, $request, $response) {
-            $reset = false;
-            try {
-                $kernel->terminate($request, $response);
-                $this->proxied && Current::componentFactory();
-                $app['events']->dispatch(new RequestTerminated($app, $app, $request, $response));
-                $request->route()?->flushController();
-                // What the request resolved or registered goes, as when Octane drops its sandbox; the
-                // objects the application booted with stay, and so does the state they reset themselves
-                \Closure::bind(function (array $booted) {
-                    foreach ($booted as $name => $value) {
-                        $this->$name = $value;
-                    }
-                }, $app, Application::class)($this->booted[$app]);
-                $reset = true;
-            } catch (\Throwable $e) {
-                $app[ExceptionHandler::class]->report($e);
-            } finally {
-                $this->proxied && Current::unset();
-                if ($reset) {
-                    // The context may live on (a WebSocket callback): with a copy of the state, not the array of an application another request takes now
-                    $left = \phasync::$contextState;
-                    \phasync::adoptContextState($left);
-                    $this->pool->release($app);
-                } else {
-                    $this->pool->discard($app);
-                }
+            if ($response instanceof WebSocketResponse) {
+                // The application goes back to the pool before the socket's handler runs
+                $client->sendResponseHeaders(101, $response->headers->allPreserveCaseWithoutCookies());
+                $client->flush();
+            } else {
+                $this->client->send($client, $request, $response);
             }
-        };
-        $streamed = $response instanceof StreamedResponse || $response instanceof BinaryFileResponse;
-        if ($streamed && !isset($context['detached']) && !Swerve::virtualizing()) {
-            // The callback runs while swerve reads the body: a coroutine of its own. Virtualized, it echoes inline
-            $context['detached'] = true;
-            \phasync::go(function () use ($context, $response, $after, $fail) {
-                try {
-                    $this->client->respond($context, $response);
-                } catch (\Throwable $e) {
-                    $fail($e);
-
-                    return;
-                } finally {
-                    $context['done'] = true;
-                    \phasync::raiseFlag($context);
-                }
-                $after();
-            });
-
-            return;
-        }
-        try {
-            $this->client->respond($context, $response);
         } catch (\Throwable $e) {
             $fail($e);
 
             return;
         }
-        isset($context['detached']) ? $after() : \phasync::finally($after); // without a coroutine of its own the request ends once swerve has sent the response
+        $reset = false;
+        try {
+            $kernel->terminate($request, $response);
+            $this->proxied && Current::componentFactory();
+            $app['events']->dispatch(new RequestTerminated($app, $app, $request, $response));
+            $request->route()?->flushController();
+            // What the request resolved or registered goes, as when Octane drops its sandbox; the
+            // objects the application booted with stay, and so does the state they reset themselves
+            \Closure::bind(function (array $booted) {
+                foreach ($booted as $name => $value) {
+                    $this->$name = $value;
+                }
+            }, $app, Application::class)($this->booted[$app]);
+            $reset = true;
+        } catch (\Throwable $e) {
+            $app[ExceptionHandler::class]->report($e);
+        } finally {
+            $this->proxied && Current::unset();
+            if ($reset) {
+                // The request's scope may live on (a WebSocket handler): with a copy of the state, not the array of an application another request takes now
+                $this->states[$app]->leave();
+                $this->pool->release($app);
+            } else {
+                $this->pool->discard($app);
+            }
+        }
+        if ($response instanceof WebSocketResponse) {
+            $response->run($client);
+        }
     }
 
     /** A new application for the pool, booted as a request would be */
@@ -251,7 +210,7 @@ final class Handler implements RequestHandlerInterface
 
     /**
      * A new application, bootstrapped as the HTTP kernel does; it has no request yet.
-     * It is booted in a state of its own, which the running context keeps.
+     * It is booted in a state of its own, which the current scope keeps.
      */
     private function boot(): Application
     {
@@ -265,16 +224,16 @@ final class Handler implements RequestHandlerInterface
         // removable: the first application did that, and they go through Current
         $app->bootstrapWith(\array_values(\array_diff((new \ReflectionMethod($kernel, 'bootstrappers'))->invoke($kernel), [HandleExceptions::class])));
         $this->install($app);
-        $this->client->prepare($app);
         // Octane's default does not delete uploads; PHP-FPM does
         $app['events']->listen(RequestTerminated::class, FlushUploadedFiles::class);
+        // A worker that stops ends its requests with a WorkerStoppingException: swerve answers it, not Laravel
+        $app->extend(ExceptionHandler::class, static fn (ExceptionHandler $handler) => new SwerveExceptionHandler($handler));
         foreach ($app['config']->get('octane.warm', []) as $service) {
             if (\is_string($service) && $app->bound($service)) {
                 $app->make($service);
             }
         }
         $this->booted[$app] = \Closure::bind(fn () => \get_object_vars($this), $app, Application::class)();
-        $state->sync(); // classes other applications declared while this one booted
         $this->states[$app] = $state;
 
         return $app;
@@ -289,11 +248,11 @@ final class Handler implements RequestHandlerInterface
         $this->proxied ? Current::install($app) : \Closure::bind(static fn () => HandleExceptions::$app = $app, null, HandleExceptions::class)();
     }
 
-    /** Context-local state registered after the first application booted cannot be given to pointers that are proxied already */
+    /** Slots added after the first application booted cannot be given to pointers that are proxied already */
     private function checkMode(): void
     {
-        if ($this->proxied && [] !== \phasync::$contextStateDefaults) {
-            throw new \LogicException('Context-local state was registered (' . \implode(', ', \array_keys(\phasync::$contextStateDefaults)) . ') after the first application booted, when none was: the application is served with process-wide pointers. Register it before the first application has booted, such as in a service provider');
+        if ($this->proxied && [] !== AppState::$defaults) {
+            throw new \LogicException('Slots were added to AppState::$defaults (' . \implode(', ', \array_keys(AppState::$defaults)) . ') after the first application booted, when there were none: the application is served with process-wide pointers. Add them before the first application has booted, such as in a service provider');
         }
     }
 

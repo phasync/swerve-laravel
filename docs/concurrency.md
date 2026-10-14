@@ -43,14 +43,13 @@ rendering a view into one): echoed output and views were cut and mixed between r
   contextual binding or a runtime provider, does not reach the next request.
 - Laravel's process-wide pointers (the container and facades, Eloquent's connection resolver and
   event dispatcher, the paginator's resolvers, `HandleExceptions`, Blade components' view
-  factory, Carbon's translator, and the instances `Facade::swap()` and `fake()` store) follow the request's coroutine: `Current` proxies them, or, when
-  classes have registered context-local state (`phasync::$contextStateDefaults`) by the time the
-  first application has booted, each application's own `phasync::$contextState` holds them.
+  factory, Carbon's translator, and the instances `Facade::swap()` and `fake()` store) follow the
+  request's `Scope`: `Current` proxies them, or, when slots were added to `AppState::$defaults` by
+  the time the first application has booted, each application's own `AppState::$state` holds them.
 - Octane's `GiveNewRequestInstanceToPaginator` is replaced by a no-op: it would point the paginator's
   resolvers at the application of the request that ran it, for every request.
-- Output buffers belong to the process. With `Swerve::virtualize()` (phasync-ext) each request runs virtualized,
-  which gives it its own; without it, a wait inside a view while it renders can mix the output
-  of requests that overlap there, and stray output (`echo`, `dump()`) ends the worker.
+- Output buffers belong to the process: a wait inside a view while it renders can mix the output
+  of requests that overlap there ([#15](https://github.com/phasync/swerve-laravel/issues/15)).
 - `Handler::run()`, for Laravel code in a WebSocket callback, runs in a fresh application of its own.
 
 ## What is not covered

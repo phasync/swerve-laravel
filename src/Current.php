@@ -22,8 +22,8 @@ use Laravel\Octane\Listeners\GiveNewRequestInstanceToPaginator;
  * Laravel reaches its application through process-wide pointers: Container::getInstance() (app(),
  * the helpers), Facade::$app (the facades), Model's connection resolver and event dispatcher, the
  * paginator's resolvers, and HandleExceptions. With several requests in one worker, each served by
- * an application of its own, these pointers are proxies that forward to the application stored in
- * the request's coroutine context (phasync::getContext()), inherited by coroutines it starts.
+ * an application of its own, these pointers are proxies that forward to the application of the
+ * request's Scope (Scope::getCurrent()), which the coroutines it starts share.
  *
  * @internal
  */
@@ -37,7 +37,7 @@ final class Current
     /** @var \ArrayAccess|null Facade::$resolvedInstance, in each request's own */
     private static ?\ArrayAccess $resolved = null;
 
-    /** @var \WeakMap<object, Application>|null the application of each request's context */
+    /** @var \WeakMap<\Scope, Application>|null the application of each request's scope */
     private static ?\WeakMap $apps = null;
 
     /** @var array<class-string, array{string, \Closure}> static callback lists that providers append to, with the one callback each keeps */
@@ -46,31 +46,29 @@ final class Current
     /** @throws \LogicException outside a request and Handler::run() */
     public static function app(): Application
     {
-        $context = self::context();
+        $scope = self::scope();
 
-        return (null === $context ? null : self::$apps[$context] ?? null) ?? throw new \LogicException('Laravel was used outside a request: wrap the code in Swerve\Laravel\Handler::run()');
+        return (null === $scope ? null : self::$apps[$scope] ?? null) ?? throw new \LogicException('Laravel was used outside a request: wrap the code in Swerve\Laravel\Handler::run()');
     }
 
-    /** Make $app the application of the current context, which is the request's own. */
+    /** Make $app the application of the current scope, which is the request's own. */
     public static function set(Application $app): void
     {
         self::$apps ??= new \WeakMap();
-        self::$apps[\phasync::getContext()] = $app;
+        self::$apps[\Scope::getCurrent()] = $app;
     }
 
     public static function unset(): void
     {
-        unset(self::$apps[\phasync::getContext()]);
+        unset(self::$apps[\Scope::getCurrent()]);
     }
 
-    /** The current coroutine's context, which a request and the coroutines it starts share; null outside coroutines. */
-    public static function context(): ?object
+    /** The current scope, which a request and the coroutines it starts share; null outside a request (the root scope). */
+    public static function scope(): ?\Scope
     {
-        try {
-            return null === \Fiber::getCurrent() ? null : \phasync::getContext();
-        } catch (\LogicException) {
-            return null;
-        }
+        $scope = \Scope::getCurrent();
+
+        return $scope === \Scope::getRootScope() ? null : $scope;
     }
 
     /**
@@ -166,7 +164,7 @@ final class Current
             {
             }
         });
-        // Carbon's locale is process-wide: each request's own, in its context
+        // Carbon's locale is process-wide: each request's own, by its scope
         if (!Carbon::getTranslator() instanceof CarbonTranslator) {
             Carbon::setTranslator(new CarbonTranslator(Carbon::getLocale()));
         }
@@ -194,28 +192,28 @@ final class Current
 
             public function offsetExists(mixed $offset): bool
             {
-                return isset($this->own[Current::context() ?? $this][$offset]);
+                return isset($this->own[Current::scope() ?? $this][$offset]);
             }
 
             public function offsetGet(mixed $offset): mixed
             {
-                return $this->own[Current::context() ?? $this][$offset];
+                return $this->own[Current::scope() ?? $this][$offset];
             }
 
             public function offsetSet(mixed $offset, mixed $value): void
             {
-                $context              = Current::context() ?? $this;
-                $own                  = $this->own[$context] ?? [];
+                $scope                = Current::scope() ?? $this;
+                $own                  = $this->own[$scope] ?? [];
                 $own[$offset]         = $value;
-                $this->own[$context]  = $own;
+                $this->own[$scope]    = $own;
             }
 
             public function offsetUnset(mixed $offset): void
             {
-                $context = Current::context() ?? $this;
-                $own     = $this->own[$context] ?? [];
+                $scope   = Current::scope() ?? $this;
+                $own     = $this->own[$scope] ?? [];
                 unset($own[$offset]);
-                $this->own[$context] = $own;
+                $this->own[$scope] = $own;
             }
         };
     }

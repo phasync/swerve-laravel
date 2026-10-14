@@ -14,10 +14,11 @@ use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\View;
-use Psr\Http\Message\ServerRequestInterface;
-use Swerve\Http\WebSocket;
+use Swerve\Laravel\AppState;
 use Swerve\Laravel\Handler;
+use Swerve\Laravel\WebSocketResponse;
 use Swerve\Swerve;
+use Swerve\WebSocket;
 
 // Wait without blocking the worker: sleep() waits as a coroutine with phasync-ext
 if (!\function_exists('swerve_test_wait')) {
@@ -61,10 +62,6 @@ Route::post('/form', function (Request $request) {
 Route::post('/json-echo', fn (Request $request) => ['all' => $request->all(), 'isJson' => $request->isJson(), 'method' => $request->method()])
     ->withoutMiddleware($withoutCsrf);
 Route::put('/json-echo', fn (Request $request) => ['all' => $request->all(), 'isJson' => $request->isJson(), 'method' => $request->method()])
-    ->withoutMiddleware($withoutCsrf);
-
-// A route may ask for swerve's PSR-7 request instead of Laravel's
-Route::post('/psr-echo', fn (ServerRequestInterface $psr) => ['body' => (string) $psr->getBody(), 'parsed' => $psr->getParsedBody()])
     ->withoutMiddleware($withoutCsrf);
 
 Route::post('/upload', function (Request $request) {
@@ -157,8 +154,6 @@ Route::get('/sse', fn () => response()->eventStream(function () {
     }
 }));
 Route::get('/forever', fn () => response()->stream(function () {
-    // A client leaving ends a virtualized request as exit() does: no finally blocks, but the shutdown functions run
-    \Swerve\Swerve::virtualizing() && \register_shutdown_function(fn () => \file_put_contents(storage_path('forever-ended'), \getmypid()));
     try {
         while (true) {
             echo \str_repeat('x', 1000) . "\n";
@@ -200,15 +195,17 @@ Route::get('/memory', function () {
     return \memory_get_usage();
 });
 // Whether this worker serves several requests at once
-Route::get('/concurrent', fn () => \json_encode(\Swerve\Http\Virtual::available()))->withoutMiddleware('web');
+Route::get('/concurrent', fn () => \json_encode(\extension_loaded('phasync')))->withoutMiddleware('web');
 
 // Every WebSocket callback that runs has a file in storage/ws-live: /ws/live counts them, in all workers
 if (!\function_exists('swerve_test_live')) {
     function swerve_test_live(Closure $callback): Closure
     {
-        return function (WebSocket $ws) use ($callback) {
-            @\mkdir(storage_path('ws-live'));
-            \touch($file = storage_path('ws-live/' . \getmypid() . '-' . \spl_object_id($ws)));
+        $dir = storage_path('ws-live'); // now: the callback runs outside the request's application
+
+        return function (WebSocket $ws) use ($callback, $dir) {
+            @\mkdir($dir);
+            \touch($file = $dir . '/' . \getmypid() . '-' . \spl_object_id($ws));
             try {
                 $callback($ws);
             } finally {
@@ -219,14 +216,14 @@ if (!\function_exists('swerve_test_live')) {
 }
 Route::get('/ws/live', fn () => \count(\glob(storage_path('ws-live/*'))));
 
-Route::get('/ws', fn (ServerRequestInterface $request) => WebSocket::from($request, swerve_test_live(function (WebSocket $ws) {
+Route::get('/ws', fn (Request $request) => WebSocketResponse::from($request, swerve_test_live(function (WebSocket $ws) {
     foreach ($ws as $message) {
         $ws->isBinary() ? $ws->sendBinary(\strrev($message)) : $ws->send("echo: $message");
     }
 })));
 
 // Server push: forward a topic; the first message says the subscription is there, and where
-Route::get('/ws/news', fn (ServerRequestInterface $request) => WebSocket::from($request, swerve_test_live(function (WebSocket $ws) {
+Route::get('/ws/news', fn (Request $request) => WebSocketResponse::from($request, swerve_test_live(function (WebSocket $ws) {
     $news = Swerve::subscribe('news');
     $ws->send('subscribed ' . \getmypid());
     foreach ($news as $message) {
@@ -245,17 +242,17 @@ Route::get('/publish', function (Request $request) {
     return 'published';
 });
 
-// Identity: the user taken from the request before WebSocket::from(), and what Laravel says
+// Identity: the user taken from the request before WebSocketResponse::from(), and what Laravel says
 // inside the callback, which runs outside any request
 Route::get('/login-as/{name}', function (string $name) {
     Auth::login(User::firstOrCreate(['email' => "$name@example.com"], ['name' => $name, 'password' => 'secret']));
 
     return Auth::user()->name;
 });
-Route::get('/ws/me', function (Request $request, ServerRequestInterface $psr) {
+Route::get('/ws/me', function (Request $request) {
     $user = $request->user(); // taken while this request runs
 
-    return WebSocket::from($psr, function (WebSocket $ws) use ($user) {
+    return WebSocketResponse::from($request, function (WebSocket $ws) use ($user) {
         $inside = function (Closure $read) {
             try {
                 return $read();
@@ -384,63 +381,63 @@ Route::get('/gadget/{name}', function (Request $request, string $name) {
 Route::get('/where', fn (Request $request) => ['path' => $request->path(), 'full' => $request->fullUrl(), 'base' => $request->getBaseUrl(), 'url' => url('/x'), 'route' => route('where')])->name('where');
 Route::get('/go-back', fn () => back());
 
-// Context-local state (APP_CONTEXT_STATE, tests/ContextStateTest.php): each application has a
-// phasync::$contextState array of its own, and a request runs with the one of its application.
-// An application is told apart by an id kept in its state, as app() is not context-local here
+// Per-application state (APP_STATE, tests/AppStateTest.php): each application has an
+// AppState::$state array of its own, and a request runs with the one of its application.
+// An application is told apart by an id kept in its state, as app() is not proxied here
 // How Laravel's process-wide pointer to the application is set: a proxy that follows the request (Current), or the application itself
 Route::get('/state/mode', fn () => [
     'proxy'      => (new ReflectionClass(Illuminate\Container\Container::getInstance()))->isAnonymous(),
-    'registered' => isset(phasync::$contextStateDefaults['registered']),
+    'registered' => isset(AppState::$defaults['registered']),
 ]);
 Route::get('/state/count', function () {
-    $id = phasync::$contextState['id'] ??= \bin2hex(\random_bytes(4));
-    $n  = phasync::$contextState['counter'] = (phasync::$contextState['counter'] ?? 0) + 1;
+    $id = AppState::$state['id'] ??= \bin2hex(\random_bytes(4));
+    $n  = AppState::$state['counter'] = (AppState::$state['counter'] ?? 0) + 1;
     swerve_test_wait(0.05);
 
-    return ['app' => $id, 'counter' => $n, 'after' => phasync::$contextState['counter']];
+    return ['app' => $id, 'counter' => $n, 'after' => AppState::$state['counter']];
 });
 Route::get('/state/bleed/{tag}', function (Request $request, string $tag) {
-    phasync::$contextState['x'] = $tag;
+    AppState::$state['x'] = $tag;
     swerve_test_wait((float) $request->query('wait', 0.1));
 
-    return ['x' => phasync::$contextState['x']];
+    return ['x' => AppState::$state['x']];
 });
 // What a later class declaration adds to the defaults, and what this application's state holds of it
 Route::get('/state/late', function (Request $request) {
-    $request->has('set') && phasync::$contextStateDefaults['late'] = 'v';
+    $request->has('set') && AppState::$defaults['late'] = 'v';
     swerve_test_wait((float) $request->query('wait', 0));
 
-    return ['late' => phasync::$contextState['late'] ?? null];
+    return ['late' => AppState::$state['late'] ?? null];
 });
-// The streamed body runs in a coroutine of its own, in the request's context
+// The streamed body runs in a coroutine of its own, in the request's scope
 Route::get('/state/stream/{tag}', function (string $tag) {
-    phasync::$contextState['x'] = $tag;
+    AppState::$state['x'] = $tag;
 
     return response()->stream(function () use ($tag) {
         swerve_test_wait(0.1);
-        echo phasync::$contextState['x'];
+        echo AppState::$state['x'];
     });
 });
 // The callback runs after the request, outside its application: it has no state of the application's
-Route::get('/state/ws', function (ServerRequestInterface $request) {
-    phasync::$contextState['ws'] = 'request';
+Route::get('/state/ws', function (Request $request) {
+    AppState::$state['ws'] = 'request';
 
-    return WebSocket::from($request, function (WebSocket $ws) {
+    return WebSocketResponse::from($request, function (WebSocket $ws) {
         foreach ($ws as $message) {
             $ws->send(\json_encode([
-                'callback' => phasync::$contextState['ws'] ?? null,
-                'run'      => Handler::run(fn () => [phasync::$contextState['ws'] ?? null, phasync::$contextState['run'] = (phasync::$contextState['run'] ?? 0) + 1]),
+                'callback' => AppState::$state['ws'] ?? null,
+                'run'      => Handler::run(fn () => [AppState::$state['ws'] ?? null, AppState::$state['run'] = (AppState::$state['run'] ?? 0) + 1]),
             ]));
         }
     });
 });
 // The callback sets its own value at its start, waits, and reads it back; the request it came from is over by then
-Route::get('/state/ws-keep/{id}', function (ServerRequestInterface $request, string $id) {
-    return WebSocket::from($request, function (WebSocket $ws) use ($id) {
-        phasync::$contextState['conn'] = $id;
+Route::get('/state/ws-keep/{id}', function (Request $request, string $id) {
+    return WebSocketResponse::from($request, function (WebSocket $ws) use ($id) {
+        AppState::$state['conn'] = $id;
         foreach ($ws as $message) {
             swerve_test_wait(0.1);
-            $ws->send(phasync::$contextState['conn'] ?? 'none');
+            $ws->send(AppState::$state['conn'] ?? 'none');
         }
     });
 });

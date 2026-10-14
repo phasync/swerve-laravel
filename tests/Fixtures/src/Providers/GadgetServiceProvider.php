@@ -12,8 +12,8 @@ class GadgetServiceProvider extends ServiceProvider
 
     public function register(): void
     {
-        // An application with context-local state (APP_CONTEXT_STATE): a class registers its slot when it is declared
-        \getenv('APP_CONTEXT_STATE') && \phasync::$contextStateDefaults['registered'] ??= true;
+        // An application with per-application state (APP_STATE): a class adds its slot when it is declared
+        \getenv('APP_STATE') && \Swerve\Laravel\AppState::$defaults['registered'] ??= true;
     }
 
     public function boot(): void
