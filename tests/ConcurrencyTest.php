@@ -73,7 +73,7 @@ test('overlapping requests each render their own view output around a wait, and 
     }, workers: 1);
 })->skip('Known failure: the output buffers are shared by the requests of a worker, phasync/swerve-laravel#15');
 
-test('requests waiting in a coroutine overlap in one worker, and with phasync-ext so do those in usleep()', function () {
+test('requests waiting in a coroutine overlap in one worker, and with ext-phasync so do those in usleep()', function () {
     with_app(function (string $addr) {
         $concurrent = 'true' === (new Browser($addr))->get('/concurrent')['body'];
         foreach (['wait' => true, 'usleep' => $concurrent] as $route => $overlaps) {

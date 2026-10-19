@@ -3,7 +3,7 @@
 /*
  * The tests run the Laravel application in tests/Fixtures/app (made by tests/create-app.sh) on
  * a real swerve, the way users run it. SWERVE_PHP_ARGS adds PHP options, such as loading
- * phasync-ext: CI runs the suite without and with it. SWERVE_TEST_PORTS is the range of ports
+ * ext-phasync: CI runs the suite without and with it. SWERVE_TEST_PORTS is the range of ports
  * the tests may listen on (default 18700-18749). The server runs with opcache, as in production:
  * without it every request would compile the application's files again, and PHP keeps part of that.
  */
@@ -47,7 +47,7 @@ function app_start(int $workers = 2, array $env = []): array
     return [$proc, $addr, $log, $err];
 }
 
-/** Whether the swerve the tests start loads phasync-ext (SWERVE_PHP_ARGS decides). */
+/** Whether the swerve the tests start loads ext-phasync (SWERVE_PHP_ARGS decides). */
 function ext_loaded(): bool
 {
     static $loaded;

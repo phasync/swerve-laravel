@@ -12,8 +12,8 @@
     ],
     "require": {
         "php": "^8.2",
-        "phasync/phasync": "dev-main",
-        "phasync/swerve": "dev-main",
+        "phasync/phasync": "^2.0",
+        "phasync/swerve": "^0.1",
         "laravel/framework": "^12.0 || ^13.0",
         "laravel/octane": "^2.0",
         "psr/http-message": "^1.0 || ^2.0"
@@ -36,7 +36,7 @@
             "entry": "Swerve\\Laravel\\entry"
         }
     },
-    "minimum-stability": "dev",
+    "minimum-stability": "stable",
     "prefer-stable": true,
     "scripts": {
         "test": "@php vendor/bin/pest --stop-on-defect",

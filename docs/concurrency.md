@@ -2,8 +2,8 @@
 
 A worker serves many Laravel requests at once. Each runs in an application of its own, taken
 from a pool of booted applications (`Handler`), so a request that waits (a coroutine sleeping,
-phasync's HTTP client, and with phasync-ext `sleep()`, queries, curl and `flock()`) lets the
-others run. With 4 workers and phasync-ext a route waiting 10 ms serves 1,661 requests/s
+phasync's HTTP client, and with ext-phasync `sleep()`, queries, curl and `flock()`) lets the
+others run. With 4 workers and ext-phasync a route waiting 10 ms serves 1,661 requests/s
 (README, "What it costs"); under Octane, with one application per worker, 295.
 
 ## Why one application per request

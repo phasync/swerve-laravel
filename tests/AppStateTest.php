@@ -11,7 +11,7 @@ const STATE = ['APP_STATE' => '1'];
 
 beforeEach(function () {
     // Applications booting at the same time share Laravel's pointers in this mode, as the fixture keeps none of them in its state
-    ext_loaded() && $this->markTestSkipped('Flaky with phasync-ext: applications that boot at the same time register their routes in each other, phasync/swerve-laravel#16');
+    ext_loaded() && $this->markTestSkipped('Flaky with ext-phasync: applications that boot at the same time register their routes in each other, phasync/swerve-laravel#16');
 });
 
 test('each application counts in its own state: overlapping requests never share an array', function () {
@@ -51,7 +51,7 @@ test('what a request sets in the state is not seen by a request that overlaps it
 test('a streamed response runs in the state of its request, also while other applications boot', function () {
     with_app(function (string $addr) {
         // The callback waits while the other requests' applications boot in their own state, and echoes what the request set in its own.
-        // The others do not stream: without phasync-ext, overlapping streams mix what they echo while they wait
+        // The others do not stream: without ext-phasync, overlapping streams mix what they echo while they wait
         foreach (['a', 'b'] as $tag) {
             $responses = overlapping([[new Browser($addr), "/state/stream/$tag"], [new Browser($addr), '/state/count'], [new Browser($addr), '/state/count']]);
             expect($responses[0]['body'])->toBe($tag);

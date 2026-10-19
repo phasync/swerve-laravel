@@ -2,12 +2,12 @@
 
 /*
  * Swerve's guard ends a worker on output outside a response (docs/stray-output.md in swerve), and has
- * its own tests; here: with phasync-ext an echo in a route is harmless, and without it the routes
+ * its own tests; here: with ext-phasync an echo in a route is harmless, and without it the routes
  * of the skeleton print nothing. The echoing routes are in tests/Fixtures/routes/stray-output.php,
  * which no other test requests.
  */
 
-test('with phasync-ext a route that echoes answers with its own response, and no worker dies', function () {
+test('with ext-phasync a route that echoes answers with its own response, and no worker dies', function () {
     [$proc, $addr, , $err] = app_start(1);
     try {
         $browser = new Browser($addr);
@@ -31,7 +31,7 @@ test('with phasync-ext a route that echoes answers with its own response, and no
         app_stop($proc);
     }
     expect(\file_get_contents($err))->not->toContain('Stray output');
-})->skip('Known failure: echo in a route is no longer the response with phasync-ext, since swerve dropped Swerve::virtualize(), phasync/swerve-laravel#15');
+})->skip('Known failure: with ext-phasync, echo in a route is not the response, phasync/swerve-laravel#15');
 
 test('the routes of the skeleton print nothing outside their responses: the worker is never respawned', function () {
     [$proc, $addr, $log, $err] = app_start(1);

@@ -3,7 +3,6 @@
 .editorconfig           export-ignore
 .php-cs-fixer.dist.php  export-ignore
 .github/                export-ignore
-benchmarks/             export-ignore
 phpunit.xml             export-ignore
 tests/                  export-ignore
 vendor/                 export-ignore

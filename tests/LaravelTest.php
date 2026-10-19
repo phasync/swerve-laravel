@@ -207,7 +207,7 @@ test('drain: SIGTERM ends a slow request with swerve\'s 503, and stops during de
     \unlink($log);
 
     // SIGTERM after a response, while its defer() callback works for 0.7 s: a wait there ends with
-    // the worker (with phasync-ext usleep() is one)
+    // the worker (with ext-phasync usleep() is one)
     [$proc, $addr, $log] = app_start(1);
     expect((new Browser($addr))->get('/defer')['status'])->toBe(200)
         ->and(app_stop($proc))->toBe(0)
@@ -224,8 +224,7 @@ test('memory stays flat over 10,000 requests', function () {
 
             return \curl_exec($ch);
         };
-        // With phasync-ext's virtualize(), a worker's memory grows by about 0.7 MiB over its first
-        // 4,000 requests, and then stays
+        // A worker's memory may grow over its first few thousand requests, and then stays
         for ($i = 0; $i < 5_000; ++$i) {
             $get('/json');
         }

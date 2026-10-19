@@ -10,15 +10,13 @@ is a PHP application server: long-running workers that serve HTTP/1.1 themselves
 request and response bodies, and hold WebSockets and Server-Sent Events. This package lets it
 run a Laravel application unchanged. It is concurrent by design: a worker serves many requests
 at once, each in a pooled application of its own, so a request that waits (an API call, a
-coroutine sleeping, and with phasync-ext `sleep()` and queries) does not hold the others.
+coroutine sleeping, and with ext-phasync `sleep()` and queries) does not hold the others.
 
 It requires [Laravel Octane](https://github.com/laravel/octane) (`laravel/octane` ^2.0, installed
 with the package) for the listeners that reset an application between requests; Octane's own
-servers and `octane:install` are not used. phasync-ext is optional.
+servers and `octane:install` are not used. ext-phasync is optional.
 
 ```bash
-composer config minimum-stability dev    # phasync and swerve are on their development versions
-composer config prefer-stable true        # everything else stays stable
 composer require phasync/swerve-laravel
 ```
 
@@ -109,26 +107,6 @@ application has no request, session or user.
 An exception thrown by the callback closes the socket with 1011 and is written to swerve's log,
 not to Laravel's exception handler.
 
-## What it costs
-
-Requests per second, the Laravel 13 skeleton in production mode (`php artisan optimize`), JIT
-on, `wrk -t4 -c64`, best of three 10 s runs, one machine, with 4 workers. RoadRunner and
-FrankenPHP run the same application under Laravel Octane, which keeps one application per
-worker:
-
-| 4 workers | swerve + phasync-ext | swerve | RoadRunner | FrankenPHP |
-|---|---:|---:|---:|---:|
-| `/api/json`, no session | 1,776 | 1,978 | 2,970 | 3,509 |
-| `/json`, new session in SQLite | 779 | 845 | 1,248 | 1,364 |
-| `/api/usleep?ms=10`, a 10 ms wait | **1,661** | 256 | 295 | 296 |
-
-A request that computes costs more here than under Octane, which does not rebuild the
-application: about 2.1 ms of CPU, 1.2 ms of it in building the application (providers 0.75).
-A request that waits makes up for it with phasync-ext: the worker serves others meanwhile,
-where an Octane worker sits idle (a 10 ms wait caps a worker at 100 requests/s), so what
-the application waits for decides which is faster. Without phasync-ext a worker computes at about two thirds of an Octane
-worker's rate, and waits as one does. [Method](benchmarks/).
-
 ## How it runs
 
 Each request runs in an application of its own, taken from a pool of booted applications and reset
@@ -167,12 +145,12 @@ that runs at the same time.
   facades, Eloquent's connection resolver and event dispatcher, ...). They are proxies that
   forward to the application of the request that runs, so requests that wait overlap in one
   worker, each in its own application. A request waits in a coroutine
-  (`phasync::sleep()`, phasync's HTTP client, sockets) with or without phasync-ext; with it
+  (`phasync::sleep()`, phasync's HTTP client, sockets) with or without ext-phasync; with it
   `sleep()`, `usleep()`, PDO/mysqli queries, curl and `flock()` wait that way as well, and
   without it they hold the worker, as under any other server. Laravel's view engine buffers
   output (`ob_start()` in `PhpEngine`, and in `@section`, `@component` and `@push`), and PHP's
   output buffers belong to the process: **a wait inside a view while it renders**, such as a
-  lazily loaded relation with phasync-ext, **mixes the output of requests that overlap there**
+  lazily loaded relation with ext-phasync, **mixes the output of requests that overlap there**
   ([#15](https://github.com/phasync/swerve-laravel/issues/15)). Load what a view needs before it
   renders (eager loading) until that is fixed.
 - **Output outside the response:** `echo`, `print` and `dump()` in a route are not part of its
@@ -193,9 +171,9 @@ that runs at the same time.
 ## Before you deploy
 
 - **Memory is one application per request in flight** (about 0.6 MiB each beyond the first).
-  Requests overlap while they wait in a coroutine; without phasync-ext `sleep()`, `usleep()`,
+  Requests overlap while they wait in a coroutine; without ext-phasync `sleep()`, `usleep()`,
   database queries and curl hold the worker, so size `--workers` like PHP-FPM's `pm.max_children`
-  for an application that waits on those. phasync-ext makes them yield.
+  for an application that waits on those. ext-phasync makes them yield.
 - **Behind a proxy that serves the application in a folder** (`https://example.com/app/`
   forwarded to swerve as `/`), use `new Handler(__DIR__, basePath: '/app')` in a `swerve.php`
   (see the setup above). `url()`, `route()`,
@@ -208,11 +186,11 @@ that runs at the same time.
 - **A stop ends the requests in flight.** On a shutdown or reload swerve stops a worker at once:
   a request still waiting then ends, answered `503` by swerve when nothing was sent yet (Laravel
   neither reports nor renders it); clients retry. `defer()` work that waits is cut short too.
-- **A validation closure that waits holds the worker with phasync-ext** (a query in a closure
+- **A validation closure that waits holds the worker with ext-phasync** (a query in a closure
   rule: Laravel calls it through `Closure::__invoke()`,
-  [phasync-ext-src#106](https://github.com/phasync/phasync-ext-src/issues/106)). A rule class
+  [ext-phasync-src#106](https://github.com/phasync/ext-phasync-src/issues/106)). A rule class
   is not affected.
-- **Open WebSockets count as connections:** without phasync-ext a worker holds about 960; see
+- **Open WebSockets count as connections:** without ext-phasync a worker holds about 960; see
   swerve's [sizing](https://github.com/phasync/swerve/blob/main/docs/production.md#sizing).
 - **Multipart `PUT` and `PATCH` bodies are not parsed**; url-encoded and JSON ones are. Send
   forms with files as `POST` with `_method=PUT`.
@@ -226,12 +204,12 @@ that runs at the same time.
 
 ## Compatibility
 
-| Laravel | PHP | phasync-ext |
+| Laravel | PHP | ext-phasync |
 |---|---|---|
 | 12 | 8.2 – 8.5 | optional; tested with and without |
 | 13 | 8.3 – 8.5 | optional; tested with and without |
 
-The suite runs on each row without and with phasync-ext. The classification of Laravel's static
+The suite runs on each row without and with ext-phasync. The classification of Laravel's static
 properties (`tests/statics/allowlist.php`) is that of Laravel 13; its test is skipped on 12.
 
 ## License

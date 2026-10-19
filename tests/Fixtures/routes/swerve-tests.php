@@ -20,7 +20,7 @@ use Swerve\Laravel\WebSocketResponse;
 use Swerve\Swerve;
 use Swerve\WebSocket;
 
-// Wait without blocking the worker: sleep() waits as a coroutine with phasync-ext
+// Wait without blocking the worker: sleep() waits as a coroutine with ext-phasync
 if (!\function_exists('swerve_test_wait')) {
     function swerve_test_wait(float $seconds): void
     {
@@ -38,14 +38,14 @@ Route::get('/json', fn () => ['hello' => 'world', 'laravel' => app()->version()]
 // Without the web group's cookies and session, as an API route
 Route::get('/api/json', fn () => ['hello' => 'world'])->withoutMiddleware('web');
 // A wait of ?ms= (default 10) in usleep(), as a database query waits: it blocks the worker
-// without phasync-ext
+// without ext-phasync
 Route::get('/api/usleep', function (Request $request) {
     \usleep(1000 * (int) $request->query('ms', 10));
 
     return ['waited' => (int) $request->query('ms', 10)];
 })->withoutMiddleware('web');
 
-// A wait of ?ms= that yields in a coroutine, with or without phasync-ext (usleep() only does with it)
+// A wait of ?ms= that yields in a coroutine, with or without ext-phasync (usleep() only does with it)
 Route::get('/api/wait', function (Request $request) {
     phasync::sleep(0.001 * (int) $request->query('ms', 10));
 

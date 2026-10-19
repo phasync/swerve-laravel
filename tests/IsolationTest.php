@@ -234,7 +234,7 @@ test('concurrent requests do not share a database connection, transaction, sessi
         expect([$a['conn'] !== $b['conn'], $a['level'], $b['level'], $a['var'], $b['var'], $a['tmp'], $b['tmp'], $a['log'], $b['log']])
             ->toBe([true, 1, 1, 'A', 'B', ['A'], ['B'], 3, 3]);
     }, workers: 1);
-})->skip(!iso_mariadb_up() || !ext_loaded(), 'needs the MariaDB test container and phasync-ext, for queries that wait without blocking the worker');
+})->skip(!iso_mariadb_up() || !ext_loaded(), 'needs the MariaDB test container and ext-phasync, for queries that wait without blocking the worker');
 
 test('terminable middleware runs once per request, with that request', function () {
     $log = APP . '/storage/iso-term.log';
@@ -273,7 +273,7 @@ test('validation failures that wait keep each request its own errors', function 
         $c = (new Browser($addr))->json('/iso-validate/C');
         expect($c['bag'])->toBe(['bad-C']);
     }, workers: 1);
-})->skip(fn () => ext_loaded(), 'Known failure with phasync-ext: a wait in a closure called through Closure::__invoke() (ClosureValidationRule) holds the worker, phasync/phasync-ext-src#106');
+})->skip(fn () => ext_loaded(), 'Known failure with ext-phasync: a wait in a closure called through Closure::__invoke() (ClosureValidationRule) holds the worker, phasync/ext-phasync-src#106');
 
 test('cookies and headers put on a response reach only that response', function () {
     with_app(function (string $addr) {

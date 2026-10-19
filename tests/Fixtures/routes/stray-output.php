@@ -1,7 +1,7 @@
 <?php
 
 // Routes that print outside their response (tests/StrayOutputTest.php), added to routes/web.php by
-// tests/create-app.sh after swerve-tests.php. Without phasync-ext a request for one ends the worker.
+// tests/create-app.sh after swerve-tests.php. Without ext-phasync a request for one ends the worker.
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
