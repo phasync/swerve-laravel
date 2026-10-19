@@ -12,6 +12,12 @@ run a Laravel application unchanged. It is concurrent by design: a worker serves
 at once, each in a pooled application of its own, so a request that waits (an API call, a
 coroutine sleeping, and with ext-phasync `sleep()` and queries) does not hold the others.
 
+The framework running correctly on swerve does not mean your application does: static
+properties and other globals in your own code are not reset between requests — the pool resets
+Laravel's own state, not yours ([what it doesn't cover](docs/shared-state.md)). See [Making your
+application safe for concurrent
+requests](https://phasync.github.io/guides/concurrent-requests-in-your-application/).
+
 It requires [Laravel Octane](https://github.com/laravel/octane) (`laravel/octane` ^2.0, installed
 with the package) for the listeners that reset an application between requests; Octane's own
 servers and `octane:install` are not used. ext-phasync is optional.

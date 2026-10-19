@@ -41,14 +41,18 @@ the wait before or after it.
 ## 3. Process-level
 
 PHP keeps these per process, and the adapter cannot give a request its own: `ini_set()`,
-`setlocale()`, `date_default_timezone_set()`, `mt_srand()`, `header()` and `http_response_code()`
-(the response is Laravel's, not PHP's), output buffers (a wait inside a view while it renders can
-mix output, [#15](https://github.com/phasync/swerve-laravel/issues/15)), `register_shutdown_function()`
-(it runs when the worker ends, not when the request does), `exit()` and fatal errors (they end the
+`setlocale()`, `mt_srand()`, `header()` and `http_response_code()` (the response is Laravel's, not
+PHP's), output buffers (a wait inside a view while it renders can mix output,
+[#15](https://github.com/phasync/swerve-laravel/issues/15)), `register_shutdown_function()` (it
+runs when the worker ends, not when the request does), `exit()` and fatal errors (they end the
 worker and every request in it; swerve starts another).
 
-Instead: set `ini` values and the locale in `php.ini` or at boot; use `config('app.timezone')` and
-`App::setLocale()` (per request) in place of the PHP functions; return a Laravel response instead
-of calling `header()`; use `terminating()` or `dispatch()->afterResponse()` instead of shutdown
-functions; throw an exception, or `abort()`, instead of `exit()`; and use `Random\Randomizer` or an
-injected seed in place of `mt_srand()`.
+`date_default_timezone_set()` is not in that list: swerve runs every request in a `\Scope` of its
+own, and `fiber-interop/scope` 0.3.0 — which phasync 2.0.2 requires — swaps the default timezone
+for each scope (the native `ext-scope` extension does the same when it is loaded instead), so it
+already behaves per request without this adapter doing anything.
+
+Instead: set `ini` values in `php.ini` or at boot; use `App::setLocale()` (per request) in place of
+`setlocale()`; return a Laravel response instead of calling `header()`; use `terminating()` or
+`dispatch()->afterResponse()` instead of shutdown functions; throw an exception, or `abort()`,
+instead of `exit()`; and use `Random\Randomizer` or an injected seed in place of `mt_srand()`.
