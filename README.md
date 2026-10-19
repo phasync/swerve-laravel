@@ -17,6 +17,8 @@ properties and other globals in your own code are not reset between requests —
 Laravel's own state, not yours ([what it doesn't cover](docs/shared-state.md)). See [Making your
 application safe for concurrent
 requests](https://phasync.github.io/guides/concurrent-requests-in-your-application/).
+[phasync/doctor](https://github.com/phasync/doctor) lists the candidates in your code:
+`composer require --dev phasync/doctor`, then `vendor/bin/phasync-doctor`.
 
 It requires [Laravel Octane](https://github.com/laravel/octane) (`laravel/octane` ^2.0, installed
 with the package) for the listeners that reset an application between requests; Octane's own
