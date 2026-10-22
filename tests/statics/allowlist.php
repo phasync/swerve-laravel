@@ -443,6 +443,7 @@ return [
     'Monolog\\Processor\\MercurialProcessor::$cache'                                                        => ['HARMLESS-CACHE', 'private', 'a', 'n/a', 'filled lazily at request time by getMercurialInfo(), from its input'],
     'Monolog\\Registry::$loggers'                                                                           => ['CONFIG-SET-ONCE-AT-BOOT', 'private', 'b', 'n/a', 'set by addLogger(), removeLogger(), assumed to be called at boot only'],
     'Monolog\\Utils::$sensitiveParameterNames'                                                              => ['CONFIG-SET-ONCE-AT-BOOT', 'private', 'b', 'n/a', 'set by getSensitiveParameterNames(), assumed to be called at boot only'],
+    'Nette\\Schema\\TypeExpression::$cache'                                                                 => ['HARMLESS-CACHE', 'private', 'a', 'n/a', 'filled lazily at request time by parse(), from its input'],
     'Nette\\Utils\\Html::$emptyElements'                                                                    => ['CONFIG-SET-ONCE-AT-BOOT', 'public', 'c', 'n/a', 'public: never written by the framework; application code that writes it does so at boot'],
     'Nette\\Utils\\Validators::$counters'                                                                   => ['CONSTANT', 'protected', 'a', 'n/a', 'never written'],
     'Nette\\Utils\\Validators::$validators'                                                                 => ['CONSTANT', 'protected', 'a', 'n/a', 'never written'],
