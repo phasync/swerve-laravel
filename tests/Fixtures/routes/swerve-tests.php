@@ -194,9 +194,6 @@ Route::get('/memory', function () {
 
     return \memory_get_usage();
 });
-// Whether this worker serves several requests at once
-Route::get('/concurrent', fn () => \json_encode(\extension_loaded('phasync')))->withoutMiddleware('web');
-
 // Every WebSocket callback that runs has a file in storage/ws-live: /ws/live counts them, in all workers
 if (!\function_exists('swerve_test_live')) {
     function swerve_test_live(Closure $callback): Closure

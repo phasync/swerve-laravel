@@ -73,15 +73,17 @@ test('overlapping requests each render their own view output around a wait, and 
     }, workers: 1);
 })->skip('Known failure: the output buffers are shared by the requests of a worker, phasync/swerve-laravel#15');
 
-test('requests waiting in a coroutine overlap in one worker, and with ext-phasync so do those in usleep()', function () {
+// swerve 0.2: every request in Async mode runs through ext-phasync's sapi() when it is loaded,
+// or otherwise through the plug (phasync-babel's rewrite to phasync-hooked's replacements), which
+// makes usleep() cooperative too: unlike swerve 0.1, it overlaps with or without the extension.
+test('requests waiting in a coroutine overlap in one worker: phasync::sleep(), and usleep() with or without ext-phasync', function () {
     with_app(function (string $addr) {
-        $concurrent = 'true' === (new Browser($addr))->get('/concurrent')['body'];
-        foreach (['wait' => true, 'usleep' => $concurrent] as $route => $overlaps) {
+        foreach (['wait', 'usleep'] as $route) {
             $start    = \microtime(true);
             [$bodies] = overlap($addr, \array_fill(0, 8, "/api/$route?ms=200"));
             $elapsed  = \microtime(true) - $start;
             expect($bodies)->toBe(\array_fill(0, 8, '{"waited":200}'))
-                ->and($elapsed)->{$overlaps ? 'toBeLessThan' : 'toBeGreaterThan'}($overlaps ? 0.8 : 1.6);
+                ->and($elapsed)->toBeLessThan(0.8);
         }
     }, workers: 1);
 });
