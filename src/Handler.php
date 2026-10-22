@@ -82,7 +82,9 @@ final class Handler
      */
     public function __construct(private readonly string $root, private readonly string $basePath = '', float $window = 60.0, int $maxApplications = 128)
     {
-        // As under Octane: Laravel then hands a generator stream's callback over as it is, and the client yields its chunks
+        // As under Octane: Laravel then hands a generator stream's callback over as it is, and the client
+        // yields its chunks. Set again in handle(): swerve fills $_SERVER fresh for every request (the same
+        // environment every mode gives one, per MODES.md), which would otherwise drop this between requests
         $_SERVER['LARAVEL_OCTANE'] = 1;
         // Each request's coroutines run with the state of the application serving it
         \phasync::onScopeChange(AppState::enter(...));
@@ -134,6 +136,8 @@ final class Handler
     /** Serve one exchange: {@see LaravelAdapter} calls this, in the request's own scope. */
     public function handle(ClientRequest $client): void
     {
+        // Swerve fills $_SERVER fresh for every request; see the constructor's comment
+        $_SERVER['LARAVEL_OCTANE'] = 1;
         // Reading and parsing the body happens here, before the application is taken
         $request = $this->client->toLaravel($client);
         $this->checkMode();

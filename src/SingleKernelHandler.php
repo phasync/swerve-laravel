@@ -22,7 +22,9 @@ use Swerve\WorkerStoppingException;
  *
  * Octane's listeners (`RequestReceived`, `RequestTerminated`) reset the application between
  * requests, as {@see Handler} does for its pooled applications; `$_SERVER['LARAVEL_OCTANE']` makes
- * Laravel hand a stream response's generator callback over as it is, for {@see Client} to run.
+ * Laravel hand a stream response's generator callback over as it is, for {@see Client} to run. Set
+ * again in handle(): swerve fills `$_SERVER` fresh for every request (the same environment every
+ * mode gives one, per MODES.md), which would otherwise drop this between requests.
  *
  * @internal built once per bare application or kernel by {@see LaravelAdapter}
  */
@@ -49,8 +51,9 @@ final class SingleKernelHandler
 
     public function handle(ClientRequest $client): void
     {
-        $request = $this->client->toLaravel($client);
-        $fail    = function (\Throwable $e) use ($client): void {
+        $_SERVER['LARAVEL_OCTANE'] = 1;
+        $request                   = $this->client->toLaravel($client);
+        $fail                      = function (\Throwable $e) use ($client): void {
             if ($e instanceof WorkerStoppingException) {
                 throw $e; // for swerve to end the exchange
             }
