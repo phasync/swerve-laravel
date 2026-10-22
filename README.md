@@ -28,19 +28,35 @@ servers and `octane:install` are not used. ext-phasync is optional.
 composer require phasync/swerve-laravel
 ```
 
-```bash
-vendor/bin/swerve --http=0.0.0.0:8080 --public=public
+```php
+<?php
+// swerve.php
+require __DIR__ . '/vendor/autoload.php';
+return Swerve\Laravel\serve(__DIR__);
 ```
 
-That's the whole setup: the `laravel` adapter serves the application. `public/index.php` stays as
-it is, so the same application still runs under PHP-FPM. The handler's settings (below) take a
-`swerve.php`, run with `--adapter=swerve`:
+```bash
+vendor/bin/swerve --http=0.0.0.0:8080
+```
+
+That's the whole setup, apart from [a reverse proxy's folder](#before-you-deploy).
+`public/index.php` stays as it is, so the same application still runs under PHP-FPM; `serve()`
+pools applications so overlapping requests each borrow one of their own
+(`AsyncMode`, see [MODES.md](https://github.com/phasync/swerve/blob/main/MODES.md)). `swerve.php`
+requires the autoloader itself: nothing else has loaded it yet when swerve evaluates this file.
+
+A `PersistentMode` application may instead give `PersistentMode::serve()` a bare application (or
+its `Illuminate\Contracts\Http\Kernel`) it booted itself, one request at a time, with no pool:
 
 ```php
-<?php // swerve.php, next to composer.json
-
-return new Swerve\RequestHandler((new Swerve\Laravel\Handler(__DIR__, basePath: '/app'))->handle(...));
+<?php
+// swerve.php
+require __DIR__ . '/vendor/autoload.php';
+return Swerve\PersistentMode::serve(__DIR__ . '/public', require __DIR__ . '/bootstrap/app.php');
 ```
+
+`AsyncMode` refuses a bare application or kernel at startup (it would overlap requests on it): use
+`serve()`, which pools applications, there instead.
 
 ## WebSockets
 
@@ -117,6 +133,11 @@ not to Laravel's exception handler.
 
 ## How it runs
 
+This is `serve()`'s pooled applications (`AsyncMode`). A bare application or kernel in
+`PersistentMode` is reset and `terminate()`d the same way, per request, but with no pool: one
+application, booted by yours. Either way, `Swerve\Laravel\LaravelAdapter` (registered once, from
+this package's Composer autoload `files`, see `integrate-with-swerve.php`) is what swerve calls.
+
 Each request runs in an application of its own, taken from a pool of booted applications and reset
 afterwards by [Laravel Octane](https://github.com/laravel/octane)'s listeners (the `listeners` of
 `config/octane.php`, so yours apply too). A request never shares an application with another
@@ -183,8 +204,8 @@ that runs at the same time.
   database queries and curl hold the worker, so size `--workers` like PHP-FPM's `pm.max_children`
   for an application that waits on those. ext-phasync makes them yield.
 - **Behind a proxy that serves the application in a folder** (`https://example.com/app/`
-  forwarded to swerve as `/`), use `new Handler(__DIR__, basePath: '/app')` in a `swerve.php`
-  (see the setup above). `url()`, `route()`,
+  forwarded to swerve as `/`), use `Swerve\Laravel\serve(__DIR__, basePath: '/app')` in a
+  `swerve.php` (see the setup above). `url()`, `route()`,
   `back()` and signed URLs then include the folder, as under PHP-FPM. `X-Forwarded-Prefix`
   does nothing for an application that doesn't trust it.
 - **Run swerve with opcache** (`php -d opcache.enable_cli=1 vendor/bin/swerve ...`, or in the

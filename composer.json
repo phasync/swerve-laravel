@@ -12,8 +12,11 @@
     ],
     "require": {
         "php": "^8.2",
+        "phasync/babel": "@dev",
+        "phasync/hooked": "@dev",
         "phasync/phasync": "^2.0",
-        "phasync/swerve": "^0.1",
+        "phasync/plug": "@dev",
+        "phasync/swerve": "dev-modes",
         "laravel/framework": "^12.0 || ^13.0",
         "laravel/octane": "^2.0",
         "psr/http-message": "^1.0 || ^2.0"
@@ -27,15 +30,40 @@
             "Swerve\\Laravel\\": "src/"
         },
         "files": [
-            "src/functions.php"
+            "src/functions.php",
+            "src/integrate-with-swerve.php"
         ]
     },
-    "extra": {
-        "swerve": {
-            "adapter": "laravel",
-            "entry": "Swerve\\Laravel\\entry"
+    "repositories": [
+        {
+            "type": "path",
+            "url": "/home/frode/dev/swerve-modes",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "/home/frode/dev/phasync-plug",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "/home/frode/dev/phasync-babel",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "/home/frode/dev/phasync-hooked",
+            "options": {
+                "symlink": true
+            }
         }
-    },
+    ],
     "minimum-stability": "stable",
     "prefer-stable": true,
     "scripts": {

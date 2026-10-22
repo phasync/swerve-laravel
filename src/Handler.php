@@ -17,10 +17,12 @@ use Swerve\Laravel\ExceptionHandler as SwerveExceptionHandler;
 use Swerve\WorkerStoppingException;
 
 /**
- * A Laravel application served by swerve: the `laravel` adapter's entry ({@see entry()}) makes one
- * per worker, and so may a swerve.php run with `--adapter=swerve`:
+ * A Laravel application served by swerve: {@see serve()} makes one per worker, pooled so that
+ * overlapping requests each borrow one of their own, and run in any mode through
+ * {@see LaravelAdapter}. A `swerve.php` of your own may build one with other settings:
  *
- *     return new Swerve\RequestHandler((new Swerve\Laravel\Handler(__DIR__))->handle(...));
+ *     $handler = new Swerve\Laravel\Handler(__DIR__, maxApplications: 32);
+ *     return Swerve\AsyncMode::serve($handler->publicPath(), $handler);
  *
  * Every request runs in an application of its own while it runs, taken from a phasync\Util\Pool of
  * booted applications, of which at most $maxApplications exist at once: a request that finds them all
@@ -63,6 +65,9 @@ final class Handler
     /** The pointers to the application are proxied by {@see Current}, as no class added a slot to AppState::$defaults when the first application booted */
     private readonly bool $proxied;
 
+    /** The application's public directory, for {@see serve()} to pass as the mode's public root */
+    private readonly string $publicPath;
+
     /**
      * @param string $root            the application's root directory, where composer.json is
      * @param string $basePath        the folder the application is served under when a reverse proxy
@@ -89,10 +94,11 @@ final class Handler
         // Slots added by now: the application's own pointers are per application, nothing is proxied
         $this->proxied = [] === AppState::$defaults;
         $this->proxied && Current::install($app);
-        $this->client  = new Client($app->publicPath(), \rtrim($basePath, '/'));
-        $this->booted  = new \WeakMap();
-        $this->states  = new \WeakMap();
-        $this->pool    = new Pool($this->create(...), $maxApplications, $window, static fn (Application $app) => $app->flush());
+        $this->publicPath = $app->publicPath();
+        $this->client     = new Client($this->publicPath, \rtrim($basePath, '/'));
+        $this->booted     = new \WeakMap();
+        $this->states     = new \WeakMap();
+        $this->pool       = new Pool($this->create(...), $maxApplications, $window, static fn (Application $app) => $app->flush());
         $app->flush();
         self::$current = $this;
     }
@@ -119,7 +125,13 @@ final class Handler
         )));
     }
 
-    /** Serve one exchange: swerve's RequestHandler calls this, in the request's own scope. */
+    /** The application's public directory: pass to {@see \Swerve\AsyncMode}'s public root. */
+    public function publicPath(): string
+    {
+        return $this->publicPath;
+    }
+
+    /** Serve one exchange: {@see LaravelAdapter} calls this, in the request's own scope. */
     public function handle(ClientRequest $client): void
     {
         // Reading and parsing the body happens here, before the application is taken
